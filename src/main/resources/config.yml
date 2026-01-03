@@ -1,0 +1,110 @@
+# Plugin prefix
+prefix: "&8[&e⚡&8] "
+
+# Send to chat when chunk freezed or not
+broadcast: true
+
+# Clears the chunk before freezing and checks again to see if it has been reloaded
+overload-purge:
+  enabled: true
+  # Entity types which will be removed
+  # https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/entity/EntityType.html
+  entity-types:
+    - ARROW
+    - SPECTRAL_ARROW
+    - FISHING_BOBBER
+    - ENDER_PEARL
+    - WIND_CHARGE
+    - SNOWBALL
+  #  - AREA_EFFECT_CLOUD
+  #  - COMMAND_BLOCK_MINECART
+  #  - FURNACE_MINECART
+  #  - SPAWNER_MINECART
+  #  - HOPPER_MINECART
+  #  - CHEST_MINECART
+  #  - TNT_MINECART
+  #  - MINECART
+  #  - BAMBOO_RAFT
+  #  - BAMBOO_CHEST_RAFT
+  #  - ACACIA_BOAT
+  #  - ACACIA_CHEST_BOAT
+  #  - BIRCH_BOAT
+  #  - BIRCH_CHEST_BOAT
+  #  - CHERRY_BOAT
+  #  - CHERRY_CHEST_BOAT
+  #  - DARK_OAK_BOAT
+  #  - DARK_OAK_CHEST_BOAT
+  #  - JUNGLE_BOAT
+  #  - JUNGLE_CHEST_BOAT
+  #  - MANGROVE_BOAT
+  #  - MANGROVE_CHEST_BOAT
+  #  - OAK_BOAT
+  #  - OAK_CHEST_BOAT
+  #  - PALE_OAK_BOAT
+  #  - PALE_OAK_CHEST_BOAT
+  #  - SPRUCE_BOAT
+  #  - SPRUCE_CHEST_BOAT
+  #  - ARMOR_STAND
+
+# Disable chunk when too much entities
+entities-protection:
+  enabled: true
+  # Interval in ticks to check chunks
+  check-period-ticks: 100
+  # Freezes a chunk if it has more entities than the specified value (players don't count)
+  freeze-threshold: 50
+  # Unfreezes a chunk if it has fewer entities than the specified value (players don't count)
+  unfreeze-threshold: 25
+  # 0 - only messages (not recommended)
+  # 1 - "soft" mode (no AI/physics freeze), but with protections
+  # 2 - strict mode (freezes entities and deletes them after 120s)
+  freeze-type: 1
+  # Entity types which will be fully ignored
+  # https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/entity/EntityType.html
+  ignore-entity-types:
+    - ENDER_DRAGON
+    - WITHER
+    - WARDEN
+
+# Disable chunk when too much redstone
+redstone-protection:
+  enabled: true
+  # Time window (in ticks) used to count redstone updates
+  window-ticks: 20
+  # Maximum number of redstone update events allowed in a single time window before it is considered "heavy activity"
+  # Higher value = less sensitive
+  max-events-per-window: 350
+  # How many consecutive time windows must exceed the limit before the chunk is treated as an infinite redstone loop
+  # This prevents short spikes from triggering a freeze
+  required-windows: 4
+  # Minimum number of DIFFERENT redstone-related blocks that must update inside the chunk during a window
+  # Prevents small clocks or simple piston setups from triggering protection
+  min-distinct-blocks: 20
+  # Time (in seconds) after a chunk is loaded during which redstone activity is ignored
+  # Prevents false positives caused by chunk loading
+  grace-seconds: 1
+  # How long (in seconds) the chunk stays frozen after a redstone loop is detected
+  freeze-seconds: 10
+  # If true, redstone power inside the chunk is forced to 0 after a redstone lag-machine is detected
+  mute-after-freeze: true
+  # How long (in seconds) redstone remains muted after freeze. 0 = muted forever until manually restarted by a player
+  mute-max-seconds: 0
+  # If true, redstone mute is removed when a player interacts with a lever, button, or pressure plate inside the muted chunk
+  unmute-on-player-interact: true
+  # If true, redstone mute is removed automatically when a powered signal enters the chunk from a neighboring chunk
+  # through the chunk border (wires, repeaters, comparators, torches). Fixes cross-chunk redstone signal issues
+  unmute-on-border-power: true
+
+# Frozen chunk borders
+barrier:
+  enabled: true
+  # Return knockback multiplier to entity when it comes to frozen chunk
+  bounce-multiplier: 0.85
+  # If true, check projectiles in frozen chunk
+  watch-projectiles: true
+  # If true, entities killed inside a frozen chunk will drop their items outside of the frozen chunk
+  watch-items: true
+  # If true, checks if from other chunks vehicle comes to frozen chunk
+  watch-vehicles: true
+  # If true, returns player dropped item(s) in frozen chunk
+  return-player-dropped-items: true
