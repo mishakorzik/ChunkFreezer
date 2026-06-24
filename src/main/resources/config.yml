@@ -1,14 +1,22 @@
-# Plugin prefix
+# Prefix displayed before every plugin message in chat.
+# Supports color codes using the & symbol.
 prefix: "&8[&e⚡&8] "
 
-# Send to chat when chunk freezed or not
+# If true, all online players receive a chat message whenever
+# a chunk gets frozen or unfrozen.
 broadcast: true
 
-# Clears the chunk before freezing and checks again to see if it has been reloaded
+# OVERLOAD PURGE
+# Before freezing a chunk, instantly remove entities of the listed types to give the chunk a chance
+# to drop below the freeze threshold without being frozen at all.
 overload-purge:
+
+  # Set to false to disable the pre-freeze purge entirely.
   enabled: true
-  # Entity types which will be removed
-  # https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/entity/EntityType.html
+
+  # Entity types that will be removed during the purge.
+  # Only types listed here are deleted - everything else is kept.
+  # Full list: https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/entity/EntityType.html
   entity-types:
     - ARROW
     - SPECTRAL_ARROW
@@ -16,95 +24,185 @@ overload-purge:
     - ENDER_PEARL
     - WIND_CHARGE
     - SNOWBALL
-  #  - AREA_EFFECT_CLOUD
-  #  - COMMAND_BLOCK_MINECART
-  #  - FURNACE_MINECART
-  #  - SPAWNER_MINECART
-  #  - HOPPER_MINECART
-  #  - CHEST_MINECART
-  #  - TNT_MINECART
-  #  - MINECART
-  #  - BAMBOO_RAFT
-  #  - BAMBOO_CHEST_RAFT
-  #  - ACACIA_BOAT
-  #  - ACACIA_CHEST_BOAT
-  #  - BIRCH_BOAT
-  #  - BIRCH_CHEST_BOAT
-  #  - CHERRY_BOAT
-  #  - CHERRY_CHEST_BOAT
-  #  - DARK_OAK_BOAT
-  #  - DARK_OAK_CHEST_BOAT
-  #  - JUNGLE_BOAT
-  #  - JUNGLE_CHEST_BOAT
-  #  - MANGROVE_BOAT
-  #  - MANGROVE_CHEST_BOAT
-  #  - OAK_BOAT
-  #  - OAK_CHEST_BOAT
-  #  - PALE_OAK_BOAT
-  #  - PALE_OAK_CHEST_BOAT
-  #  - SPRUCE_BOAT
-  #  - SPRUCE_CHEST_BOAT
-  #  - ARMOR_STAND
 
-# Disable chunk when too much entities
+# ENTITIES PROTECTION
+# Monitors loaded chunks near players and freezes any chunk whose non-ignored entity count exceeds
+# the freeze threshold.
 entities-protection:
+
+  # Set to false to disable entity-based chunk freezing entirely.
   enabled: true
-  # Interval in ticks to check chunks
-  check-period-ticks: 100
-  # Freezes a chunk if it has more entities than the specified value (players don't count)
-  freeze-threshold: 50
-  # Unfreezes a chunk if it has fewer entities than the specified value (players don't count)
-  unfreeze-threshold: 25
-  # 0 - only messages (not recommended)
-  # 1 - "soft" mode (no AI/physics freeze), but with protections
-  # 2 - strict mode (freezes entities and deletes them after 120s)
-  freeze-type: 1
-  # Entity types which will be fully ignored
-  # https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/entity/EntityType.html
+
+  # How often (in ticks) each monitored chunk is checked.
+  # 20 ticks = 1 second. Lower values react faster but use more CPU.
+  # Minimum allowed value: 20. Values below 20 are clamped up.
+  check-period-ticks: 40
+
+  # A chunk is frozen when its non-ignored entity count
+  # reaches or exceeds this number.
+  freeze-threshold: 100
+
+  # A frozen chunk is unfrozen when its entity count drops
+  # to this number or below. Must be lower than freeze-threshold.
+  unfreeze-threshold: 50
+
+  # If a frozen chunk reloads and its entity count exceeds this value,
+  # all non-ignored entities in that chunk are forcibly removed immediately.
+  # Set to 0 to disable.
+  destroy-threshold: 300
+
+  # If true, creeper explosions are allowed inside a frozen chunk.
+  # Any items produced by the explosion are redirected to the nearest
+  # unfrozen neighbouring chunk edge (same behaviour as mob death drops).
+  allow-creeper-explosions: true
+
+  # Entity types that are completely ignored when counting entities.
+  # These entities will never trigger a freeze and are not counted
+  # toward the freeze or unfreeze thresholds.
   ignore-entity-types:
     - ENDER_DRAGON
     - WITHER
     - WARDEN
 
-# Disable chunk when too much redstone
-redstone-protection:
+# INSTANT DESPAWN
+# When a chunk is frozen and no player is within the configured radius, all eligible entities
+# in that chunk are removed immediately instead of waiting.
+instant-despawn:
+
+  # Set to false to disable instant despawning entirely.
   enabled: true
-  # Time window (in ticks) used to count redstone updates
+
+  # Distance in blocks from the center of the frozen chunk.
+  # If no player is within this radius, eligible entities are despawned.
+  # Uses a flat 2D distance check (ignores Y axis).
+  radius: 48
+
+  # If false, entities that have a custom name (name tag) are spared
+  # and will NOT be despawned.
+  # If true, even named entities are despawned.
+  named-entity: false
+
+  # Entity types that are never despawned by instant-despawn,
+  # regardless of player distance or the named-entity setting.
+  # Full list: https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/entity/EntityType.html
+  ignore-entity-types:
+    - ENDER_DRAGON
+    - WITHER
+    - VILLAGER
+    - IRON_GOLEM
+
+# REDSTONE PROTECTION
+# Detects infinite redstone loops by counting how many distinct redstone blocks update per time window.
+# When the loop is confirmed, the chunk is frozen and redstone power inside it is silenced.
+redstone-protection:
+
+  # Set to false to disable redstone loop detection entirely.
+  enabled: true
+
+  # Length of a single measurement window in ticks (20 ticks = 1 second).
+  # Redstone update events are counted within each window.
   window-ticks: 20
-  # Maximum number of redstone update events allowed in a single time window before it is considered "heavy activity"
-  # Higher value = less sensitive
+
+  # Maximum number of redstone update events allowed within one window
+  # before that window is considered "overloaded".
   max-events-per-window: 350
-  # How many consecutive time windows must exceed the limit before the chunk is treated as an infinite redstone loop
-  # This prevents short spikes from triggering a freeze
+
+  # How many consecutive overloaded windows must occur before the
+  # chunk is actually frozen. Prevents false positives from short bursts.
   required-windows: 4
-  # Minimum number of DIFFERENT redstone-related blocks that must update inside the chunk during a window
-  # Prevents small clocks or simple piston setups from triggering protection
+
+  # Minimum number of distinct redstone block positions that must
+  # update within a window for it to count as overloaded.
+  # Helps distinguish a complex but finite circuit from an infinite loop.
   min-distinct-blocks: 20
-  # Time (in seconds) after a chunk is loaded during which redstone activity is ignored
-  # Prevents false positives caused by chunk loading
+
+  # How many seconds after a chunk loads to ignore redstone activity.
+  # Prevents false positives caused by chunks initializing on load.
   grace-seconds: 1
-  # How long (in seconds) the chunk stays frozen after a redstone loop is detected
+
+  # How many seconds the chunk stays frozen after a redstone loop
+  # is detected. After this time the plugin checks if it is safe to unfreeze.
   freeze-seconds: 10
-  # If true, redstone power inside the chunk is forced to 0 after a redstone lag-machine is detected
+
+  # If true, redstone power inside the chunk is forced to 0 after
+  # the chunk is frozen, silencing the loop permanently until unmuted.
   mute-after-freeze: true
-  # How long (in seconds) redstone remains muted after freeze. 0 = muted forever until manually restarted by a player
+
+  # How long (in seconds) the redstone mute lasts after the freeze.
+  # 0 means the mute never expires automatically — a player must
+  # manually restart it (see unmute-on-player-interact / unmute-on-border-power).
   mute-max-seconds: 0
-  # If true, redstone mute is removed when a player interacts with a lever, button, or pressure plate inside the muted chunk
+
+  # If true, a player interacting with a lever, button, or pressure
+  # plate inside a muted chunk will remove the mute, allowing redstone
+  # to work again from that player interaction onward.
   unmute-on-player-interact: true
-  # If true, redstone mute is removed automatically when a powered signal enters the chunk from a neighboring chunk
-  # through the chunk border (wires, repeaters, comparators, torches). Fixes cross-chunk redstone signal issues
+
+  # If true, the mute is lifted automatically when a powered redstone
+  # signal enters the chunk from a neighboring (unfrozen) chunk.
+  # Useful for machines that are controlled from outside the frozen area.
   unmute-on-border-power: true
 
-# Frozen chunk borders
+# BARRIER
+# Controls what is blocked from entering a frozen chunk and how entities and items near the border are handled.
 barrier:
+
+  # Set to false to disable all barrier features at once.
   enabled: true
-  # Return knockback multiplier to entity when it comes to frozen chunk
-  bounce-multiplier: 0.85
-  # If true, check projectiles in frozen chunk
-  watch-projectiles: true
-  # If true, entities killed inside a frozen chunk will drop their items outside of the frozen chunk
-  watch-items: true
-  # If true, checks if from other chunks vehicle comes to frozen chunk
-  watch-vehicles: true
-  # If true, returns player dropped item(s) in frozen chunk
-  return-player-dropped-items: true
+
+  watch-projectiles:
+
+    # If true, projectiles that remain stuck inside a frozen chunk are removed.
+    # Projectiles that pass through quickly (e.g. arrows in flight) are unaffected.
+    enabled: true
+
+    # If true, fireworks are allowed to spawn and detonate inside frozen chunks.
+    allow-fireworks: true
+
+  watch-items:
+
+    # Master switch for all item-related barrier features.
+    enabled: true
+
+    # If a player standing inside a frozen chunk drops an item, the action
+    # is cancelled. Also, any item that lands inside a frozen chunk (mob drops,
+    # block drops, items thrown or rolling in from outside) is automatically
+    # moved to the nearest unfrozen neighbouring chunk.
+    return-player-dropped-item: true
+
+  # If true, water and lava flowing from an unfrozen chunk
+  # into a frozen chunk are blocked at the border.
+  watch-liquids: true
+
+  watch-players:
+
+    # If true, players in Survival/Adventure mode cannot walk,
+    # teleport, or use ender pearls / chorus fruit / portals to
+    # enter a frozen chunk. Creative and Spectator mode players are always allowed in.
+    # All sub-options below have no effect when this is false.
+    enabled: false
+
+    # Knockback strength applied to the player when they are bounced back.
+    # 1.0 = full reverse velocity, 0.5 = half, 0.0 = stops dead.
+    bounce-multiplier: 0.75
+
+    # If true, a player standing inside a frozen chunk sees a persistent
+    # warning in their action bar.
+    notify-when-in-frozen: true
+
+    # Damage dealt each time a player is blocked from entering a frozen chunk.
+    # Range: 0–20. 0 = disabled. 1 = half a heart, 2 = one heart, etc.
+    damage-on-entry: 1
+
+    # Radius in blocks around the player in which the red particle wall is visible.
+    # 0 = disabled. Active range: 2–16.
+    particles-on-entry: 4
+
+  watch-entities:
+
+    # If true, mobs and vehicles are bounced back when they try to enter a frozen chunk.
+    enabled: true
+
+    # Knockback strength applied to entities that attempt to cross into a frozen chunk.
+    # 1.0 = full reverse velocity, 0.5 = half, 0.0 = stops dead.
+    bounce-multiplier: 0.75

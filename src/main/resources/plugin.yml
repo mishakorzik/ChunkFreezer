@@ -1,5 +1,5 @@
 name: ChunkFreezer
-version: 1.0.1
+version: '1.0.2-b1'
 main: com.heonezen.chunkfreezer.ChunkFreezerPlugin
 api-version: "1.21"
 folia-supported: true
@@ -7,3 +7,12 @@ authors:
  - HeOneZen
 description: Automatically freezes overloaded chunks
 website: https://github.com/mishakorzik
+permissions:
+  chunkfreezer.admin:
+    description: Access to ChunkFreezer commands
+    default: op
+commands:
+  chunk:
+    description: ChunkFreezer management commands
+    usage: /chunk <list|reload>
+    permission: chunkfreezer.admin
