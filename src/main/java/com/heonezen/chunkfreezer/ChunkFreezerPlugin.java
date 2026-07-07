@@ -27,6 +27,7 @@ public final class ChunkFreezerPlugin extends JavaPlugin {
         registerCommand();
         initComponents();
     }
+
     private void initComponents() {
         settings = new Settings(getConfig());
         manager  = new FrozenChunkManager(this, settings);

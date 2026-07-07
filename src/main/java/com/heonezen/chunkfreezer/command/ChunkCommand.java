@@ -52,7 +52,7 @@ public final class ChunkCommand implements CommandExecutor, TabCompleter {
             Component coords = Component.text("xyz(" + bx + ", ~, " + bz + ")", NamedTextColor.YELLOW)
                     .clickEvent(ClickEvent.runCommand("/chunk go " + wName + " " + bx + " " + bz))
                     .hoverEvent(HoverEvent.showText(Component.text("Click to teleport", NamedTextColor.GRAY)));
-            sender.sendMessage(Component.text(" » ", NamedTextColor.DARK_GRAY)
+            sender.sendMessage(Component.text(" ", NamedTextColor.DARK_GRAY)
                     .append(Component.text(wName + " ", NamedTextColor.WHITE))
                     .append(coords)
                     .append(Component.text(" (" + causeStr + ")", NamedTextColor.RED)));
@@ -78,13 +78,49 @@ public final class ChunkCommand implements CommandExecutor, TabCompleter {
     }
     private void sendHelp(CommandSender sender) {
         sender.sendMessage(Component.text("ChunkFreezer Commands:", NamedTextColor.GOLD, TextDecoration.BOLD));
-        sender.sendMessage(Component.text(" /chunk list", NamedTextColor.YELLOW).append(Component.text("     Show frozen chunks", NamedTextColor.GRAY)));
-        sender.sendMessage(Component.text(" /chunk reload", NamedTextColor.YELLOW).append(Component.text("   Reload configuration", NamedTextColor.GRAY)));
+        sender.sendMessage(Component.text(" /chunk list", NamedTextColor.YELLOW).append(Component.text(" - Show frozen chunks", NamedTextColor.GRAY)));
+        sender.sendMessage(Component.text(" /chunk reload", NamedTextColor.YELLOW).append(Component.text(" - Reload configuration", NamedTextColor.GRAY)));
+        sender.sendMessage(Component.text(" /chunk go <world> <x> <z>", NamedTextColor.YELLOW).append(Component.text(" - Teleport to chunk", NamedTextColor.GRAY)));
     }
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (!sender.isOp() && !sender.hasPermission("chunkfreezer.admin")) return Collections.emptyList();
-        if (args.length == 1) return Arrays.asList("list", "reload");
+        if (args.length == 1) return filterStartsWith(Arrays.asList("list", "reload", "go"), args[0]);
+        if (args.length >= 2 && args[0].equalsIgnoreCase("go")) {
+            if (args.length == 2) {
+                List<String> worlds = new ArrayList<>();
+                for (World w : Bukkit.getWorlds()) worlds.add(w.getName());
+                return filterStartsWith(worlds, args[1]);
+            }
+            if (args.length == 3) {
+                List<String> xs = new ArrayList<>();
+                for (FrozenChunkManager.FrozenInfo info : manager.getFrozenChunks()) {
+                    World w = Bukkit.getWorld(info.worldId());
+                    if (w != null && w.getName().equalsIgnoreCase(args[1])) {
+                        xs.add(String.valueOf((info.cx() << 4) + 8));
+                    }
+                }
+                return filterStartsWith(xs, args[2]);
+            }
+            if (args.length == 4) {
+                List<String> zs = new ArrayList<>();
+                for (FrozenChunkManager.FrozenInfo info : manager.getFrozenChunks()) {
+                    World w = Bukkit.getWorld(info.worldId());
+                    if (w == null || !w.getName().equalsIgnoreCase(args[1])) continue;
+                    if (String.valueOf((info.cx() << 4) + 8).equals(args[2])) {
+                        zs.add(String.valueOf((info.cz() << 4) + 8));
+                    }
+                }
+                return filterStartsWith(zs, args[3]);
+            }
+        }
         return Collections.emptyList();
+    }
+    private List<String> filterStartsWith(List<String> options, String prefix) {
+        if (prefix.isEmpty()) return options;
+        String lower = prefix.toLowerCase();
+        List<String> result = new ArrayList<>();
+        for (String o : options) if (o.toLowerCase().startsWith(lower)) result.add(o);
+        return result;
     }
 }

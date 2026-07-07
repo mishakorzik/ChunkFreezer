@@ -6,8 +6,6 @@ import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
 import org.bukkit.World;
-import org.bukkit.entity.Entity;
-import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -47,7 +45,9 @@ public final class RedstoneLoopProtector implements Listener {
         if (now < st.ignoreUntilMs) return;
         long win = windowIndex(now);
         if (st.windowIdx != win) {
-            st.consecutiveOver = (st.eventsInWindow >= settings.redstoneMaxEventsPerWindow && st.distinctInWindow >= settings.redstoneMinDistinctBlocks) ? st.consecutiveOver + 1 : 0;
+            st.consecutiveOver = (st.eventsInWindow >= settings.redstoneMaxEventsPerWindow
+                    && st.distinctInWindow >= settings.redstoneMinDistinctBlocks)
+                    ? st.consecutiveOver + 1 : 0;
             st.windowIdx = win; st.eventsInWindow = 0; st.distinctInWindow = 0; st.positions = null;
         }
         st.eventsInWindow++;
@@ -90,15 +90,9 @@ public final class RedstoneLoopProtector implements Listener {
     private void attemptUnfreeze(World world, int cx, int cz) {
         if (!world.isChunkLoaded(cx, cz)) return;
         Chunk chunk = world.getChunkAt(cx, cz);
-        if (countForLimit(chunk) < settings.freezeThreshold && manager.isFrozen(world, cx, cz))
+        if (!manager.isFrozen(world, cx, cz) || manager.isUnfreezeLocked(world, cx, cz)) return;
+        if (settings.countNonIgnoredEntities(chunk.getEntities()) <= settings.unfreezeThreshold)
             manager.unfreezeChunk(chunk);
-    }
-    private int countForLimit(Chunk chunk) {
-        int c = 0;
-        for (Entity e : chunk.getEntities()) {
-            if (!(e instanceof Player) && !settings.isIgnored(e.getType())) c++;
-        }
-        return c;
     }
     private long windowIndex(long nowMs) {
         return nowMs / Math.max(50L, settings.redstoneWindowTicks * 50L);

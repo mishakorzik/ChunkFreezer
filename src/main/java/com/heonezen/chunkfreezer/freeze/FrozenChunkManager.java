@@ -43,8 +43,15 @@ public final class FrozenChunkManager {
         return st != null ? st.cause : null;
     }
     public void lockUnfreezeUntil(World world, int cx, int cz, long untilMs) {
-        ChunkState st = chunks.get(ChunkId.of(world, cx, cz));
-        if (st != null) st.unfreezeLockUntilMs = untilMs;
+        ChunkId id = ChunkId.of(world, cx, cz);
+        ChunkState st = chunks.get(id);
+        if (st != null) {
+            st.unfreezeLockUntilMs = untilMs;
+        } else {
+            ChunkState ghost = new ChunkState(FreezeCause.REDSTONE);
+            ghost.unfreezeLockUntilMs = untilMs;
+            chunks.putIfAbsent(id, ghost);
+        }
     }
     public boolean isUnfreezeLocked(World world, int cx, int cz) {
         ChunkState st = chunks.get(ChunkId.of(world, cx, cz));

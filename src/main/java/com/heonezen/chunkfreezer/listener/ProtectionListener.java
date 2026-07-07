@@ -24,8 +24,8 @@ import java.util.*;
 public final class ProtectionListener implements Listener {
 
     private static final int   BFS_LIMIT = 512;
-    private static final int[] DIR_X = {1, -1, 0, 0};
-    private static final int[] DIR_Z = {0, 0, 1, -1};
+    private static final int[] DIR_X     = {1, -1, 0, 0};
+    private static final int[] DIR_Z     = {0, 0, 1, -1};
 
     private final Plugin plugin;
     private final Settings settings;
@@ -40,10 +40,10 @@ public final class ProtectionListener implements Listener {
     private static DropPoint borderPt(Location o, int fx, int fz, int tx, int tz) {
         int minX = tx << 4, minZ = tz << 4;
         double x, z;
-        if      (tx == fx + 1) { x = minX + 1.5;    z = clamp(o.getZ(), minZ + 1.5, minZ + 14.5); }
-        else if (tx == fx - 1) { x = minX + 14.5;   z = clamp(o.getZ(), minZ + 1.5, minZ + 14.5); }
-        else if (tz == fz + 1) { z = minZ + 1.5;    x = clamp(o.getX(), minX + 1.5, minX + 14.5); }
-        else                   { z = minZ + 14.5;   x = clamp(o.getX(), minX + 1.5, minX + 14.5); }
+        if      (tx == fx + 1) { x = minX + 1.0;  z = clamp(o.getZ(), minZ + 1.0, minZ + 15.0); }
+        else if (tx == fx - 1) { x = minX + 15.0; z = clamp(o.getZ(), minZ + 1.0, minZ + 15.0); }
+        else if (tz == fz + 1) { z = minZ + 1.0;  x = clamp(o.getX(), minX + 1.0, minX + 15.0); }
+        else                   { z = minZ + 15.0; x = clamp(o.getX(), minX + 1.0, minX + 15.0); }
         return new DropPoint(x, z);
     }
     private static double safeY(World w, int bx, int bz, double startY) {

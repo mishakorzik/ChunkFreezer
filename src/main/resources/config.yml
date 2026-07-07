@@ -7,8 +7,9 @@ prefix: "&8[&e⚡&8] "
 broadcast: true
 
 # OVERLOAD PURGE
-# Before freezing a chunk, instantly remove entities of the listed types to give the chunk a chance
-# to drop below the freeze threshold without being frozen at all.
+# Before freezing a chunk, instantly remove entities of
+# the listed types to give the chunk a chance to drop
+# below the freeze threshold without being frozen at all.
 overload-purge:
 
   # Set to false to disable the pre-freeze purge entirely.
@@ -18,7 +19,9 @@ overload-purge:
   # Only types listed here are deleted - everything else is kept.
   # Full list: https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/entity/EntityType.html
   entity-types:
+    - TNT
     - ARROW
+    - FALLING_BLOCK
     - SPECTRAL_ARROW
     - FISHING_BOBBER
     - ENDER_PEARL
@@ -26,8 +29,9 @@ overload-purge:
     - SNOWBALL
 
 # ENTITIES PROTECTION
-# Monitors loaded chunks near players and freezes any chunk whose non-ignored entity count exceeds
-# the freeze threshold.
+# Monitors loaded chunks near players and freezes any
+# chunk whose non-ignored entity count exceeds the
+# freeze threshold.
 entities-protection:
 
   # Set to false to disable entity-based chunk freezing entirely.
@@ -63,10 +67,12 @@ entities-protection:
     - ENDER_DRAGON
     - WITHER
     - WARDEN
+    - ITEM
 
 # INSTANT DESPAWN
-# When a chunk is frozen and no player is within the configured radius, all eligible entities
-# in that chunk are removed immediately instead of waiting.
+# When a chunk is frozen and no player is within the
+# configured radius, all eligible entities in that chunk
+# are removed immediately instead of waiting.
 instant-despawn:
 
   # Set to false to disable instant despawning entirely.
@@ -86,14 +92,22 @@ instant-despawn:
   # regardless of player distance or the named-entity setting.
   # Full list: https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/entity/EntityType.html
   ignore-entity-types:
-    - ENDER_DRAGON
+    - ITEM
+    - ITEM_FRAME
+    - GLOW_ITEM_FRAME
     - WITHER
+    - ENDER_DRAGON
     - VILLAGER
     - IRON_GOLEM
+    - ARMOR_STAND
+    - ENDER_PEARL
+    
 
 # REDSTONE PROTECTION
-# Detects infinite redstone loops by counting how many distinct redstone blocks update per time window.
-# When the loop is confirmed, the chunk is frozen and redstone power inside it is silenced.
+# Detects infinite redstone loops by counting how many
+# distinct redstone blocks update per time window.
+# When the loop is confirmed, the chunk is frozen and
+# redstone power inside it is silenced.
 redstone-protection:
 
   # Set to false to disable redstone loop detection entirely.
@@ -144,7 +158,8 @@ redstone-protection:
   unmute-on-border-power: true
 
 # BARRIER
-# Controls what is blocked from entering a frozen chunk and how entities and items near the border are handled.
+# Controls what is blocked from entering a frozen chunk
+# and how entities and items near the border are handled.
 barrier:
 
   # Set to false to disable all barrier features at once.
@@ -170,9 +185,11 @@ barrier:
     # moved to the nearest unfrozen neighbouring chunk.
     return-player-dropped-item: true
 
-  # If true, water and lava flowing from an unfrozen chunk
-  # into a frozen chunk are blocked at the border.
-  watch-liquids: true
+  watch-liquids:
+
+    # If true, water and lava flowing from an unfrozen chunk
+    # into a frozen chunk are blocked at the border.
+    enabled: true
 
   watch-players:
 

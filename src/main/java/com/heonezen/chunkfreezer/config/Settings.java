@@ -56,7 +56,7 @@ public final class Settings {
     public Settings(FileConfiguration cfg) {
         this.prefix = ChatColor.translateAlternateColorCodes('&', cfg.getString("prefix", "&8[&e⚡&8] "));
         this.entitiesProtectionEnabled = cfg.getBoolean("entities-protection.enabled", true);
-        this.checkPeriodTicks = Math.max(20L, cfg.getLong("entities-protection.check-period-ticks", 40L));
+        this.checkPeriodTicks = Math.max(1L, Math.min(100L, cfg.getLong("entities-protection.check-period-ticks", 40L)));
 
         int unfreeze = Math.max(0, cfg.getInt("entities-protection.unfreeze-threshold", 50));
         int freeze   = Math.max(1, cfg.getInt("entities-protection.freeze-threshold", 100));
@@ -77,20 +77,20 @@ public final class Settings {
         this.watchItemsEnabled        = cfg.getBoolean("barrier.watch-items.enabled", true);
         this.returnPlayerDroppedItem  = cfg.getBoolean("barrier.watch-items.return-player-dropped-item", true);
         this.notifyWhenInFrozen       = cfg.getBoolean("barrier.watch-players.notify-when-in-frozen", true);
-        this.watchLiquids             = cfg.getBoolean("barrier.watch-liquids", true);
+        this.watchLiquids             = cfg.getBoolean("barrier.watch-liquids.enabled", true);
         this.watchPlayersEnabled      = cfg.getBoolean("barrier.watch-players.enabled", false);
         this.playerBounceMultiplier   = clamp(cfg.getDouble("barrier.watch-players.bounce-multiplier", 0.75), 0.05, 1.25);
         this.damageOnEntry            = clamp(cfg.getDouble("barrier.watch-players.damage-on-entry", 1.0), 0.0, 20.0);
-        int rawParticles = cfg.getInt("barrier.watch-players.particles-on-entry", 4);
+        int rawParticles              = cfg.getInt("barrier.watch-players.particles-on-entry", 4);
         this.particlesOnEntry         = rawParticles <= 0 ? 0 : Math.max(2, Math.min(16, rawParticles));
         this.watchEntitiesEnabled     = cfg.getBoolean("barrier.watch-entities.enabled", true);
         this.entityBounceMultiplier   = clamp(cfg.getDouble("barrier.watch-entities.bounce-multiplier", 0.75), 0.05, 1.25);
 
-        this.overloadPurgeEnabled      = cfg.getBoolean("overload-purge.enabled", true);
-        this.overloadPurgeEntityTypes  = parseEntityTypes(cfg.getStringList("overload-purge.entity-types"));
+        this.overloadPurgeEnabled     = cfg.getBoolean("overload-purge.enabled", true);
+        this.overloadPurgeEntityTypes = parseEntityTypes(cfg.getStringList("overload-purge.entity-types"));
 
         this.redstoneProtectionEnabled      = cfg.getBoolean("redstone-protection.enabled", true);
-        this.redstoneWindowTicks            = clampInt(cfg.getInt("redstone-protection.window-ticks", 20), 1, 200);
+        this.redstoneWindowTicks            = clampInt(cfg.getInt("redstone-protection.window-ticks", 20), 1, 100);
         this.redstoneMaxEventsPerWindow     = Math.max(1, cfg.getInt("redstone-protection.max-events-per-window", 350));
         this.redstoneRequiredWindows        = clampInt(cfg.getInt("redstone-protection.required-windows", 4), 1, 60);
         this.redstoneMinDistinctBlocks      = clampInt(cfg.getInt("redstone-protection.min-distinct-blocks", 20), 0, 1000);
@@ -110,6 +110,14 @@ public final class Settings {
     public boolean isIgnored(EntityType t) { return ignoredEntityTypes.contains(t); }
     public boolean shouldPurgeProjectileType(EntityType t) { return overloadPurgeEntityTypes.contains(t); }
     public boolean isInstantDespawnIgnored(EntityType t) { return instantDespawnIgnoreTypes.contains(t); }
+    public int countNonIgnoredEntities(org.bukkit.entity.Entity[] entities) {
+        int c = 0;
+        for (org.bukkit.entity.Entity e : entities) {
+            if (e instanceof org.bukkit.entity.Player) continue;
+            if (!isIgnored(e.getType())) c++;
+        }
+        return c;
+    }
     private static Set<EntityType> parseEntityTypes(List<String> raw) {
         if (raw == null || raw.isEmpty()) return Collections.emptySet();
         EnumSet<EntityType> set = EnumSet.noneOf(EntityType.class);
