@@ -1,27 +1,17 @@
-# Prefix displayed before every plugin message in chat.
-# Supports color codes using the & symbol.
-prefix: "&8[&e⚡&8] "
-
-# If true, all online players receive a chat message whenever
-# a chunk gets frozen or unfrozen.
+# Broadcast a chat message to everyone when a chunk freezes/unfreezes.
 broadcast: true
 
 # OVERLOAD PURGE
-# Before freezing a chunk, instantly remove entities of
-# the listed types to give the chunk a chance to drop
-# below the freeze threshold without being frozen at all.
+# Before freezing a chunk, delete these entity types first - the chunk might
+# drop below the threshold and not need freezing at all.
 overload-purge:
 
-  # Set to false to disable the pre-freeze purge entirely.
+  # Set to false to disable the pre-freeze purge.
   enabled: true
 
-  # Entity types that will be removed during the purge.
-  # Only types listed here are deleted - everything else is kept.
-  # Full list: https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/entity/EntityType.html
+  # Only these types get removed. Everything else is kept.
   entity-types:
-    - TNT
     - ARROW
-    - FALLING_BLOCK
     - SPECTRAL_ARROW
     - FISHING_BOBBER
     - ENDER_PEARL
@@ -29,197 +19,239 @@ overload-purge:
     - SNOWBALL
 
 # ENTITIES PROTECTION
-# Monitors loaded chunks near players and freezes any
-# chunk whose non-ignored entity count exceeds the
-# freeze threshold.
+# Freezes a chunk when too many entities pile up in it.
 entities-protection:
 
-  # Set to false to disable entity-based chunk freezing entirely.
+  # Set to false to disable entity-based freezing entirely.
   enabled: true
 
-  # How often (in ticks) each monitored chunk is checked.
-  # 20 ticks = 1 second. Lower values react faster but use more CPU.
-  # Minimum allowed value: 20. Values below 20 are clamped up.
+  # How often (ticks) to check each chunk. 20 = 1 second. Min 20.
   check-period-ticks: 40
 
-  # A chunk is frozen when its non-ignored entity count
-  # reaches or exceeds this number.
+  # Freeze when entity count reaches this...
   freeze-threshold: 100
 
-  # A frozen chunk is unfrozen when its entity count drops
-  # to this number or below. Must be lower than freeze-threshold.
+  # ...unfreeze when it drops to this or below. Must be lower than freeze-threshold.
   unfreeze-threshold: 50
 
-  # If a frozen chunk reloads and its entity count exceeds this value,
-  # all non-ignored entities in that chunk are forcibly removed immediately.
-  # Set to 0 to disable.
+  # Seconds after a chunk loads/generates before it's allowed to freeze.
+  # New chunks can briefly have a high entity count from world generation -
+  # this stops that from causing a false freeze. Unfreezing is unaffected.
+  grace-seconds: 3
+
+  # If a chunk loads with more than this many entities, wipe them all
+  # immediately. 0 disables this.
   destroy-threshold: 300
 
-  # If true, creeper explosions are allowed inside a frozen chunk.
-  # Any items produced by the explosion are redirected to the nearest
-  # unfrozen neighbouring chunk edge (same behaviour as mob death drops).
+  # Allow creeper explosions inside a frozen chunk (drops still get
+  # redirected out, like normal mob-death drops).
   allow-creeper-explosions: true
 
-  # Entity types that are completely ignored when counting entities.
-  # These entities will never trigger a freeze and are not counted
-  # toward the freeze or unfreeze thresholds.
+  # These types are never counted, so they never cause a freeze.
   ignore-entity-types:
     - ENDER_DRAGON
     - WITHER
     - WARDEN
-    - ITEM
 
 # INSTANT DESPAWN
-# When a chunk is frozen and no player is within the
-# configured radius, all eligible entities in that chunk
-# are removed immediately instead of waiting.
+# In a frozen chunk with no player nearby, remove eligible entities right
+# away instead of waiting. The ignore-entity-types list below is also used by
+# /chunk despawn <world> <x> <z>, which works even with this (or entities-protection) turned off.
 instant-despawn:
 
   # Set to false to disable instant despawning entirely.
   enabled: true
 
-  # Distance in blocks from the center of the frozen chunk.
-  # If no player is within this radius, eligible entities are despawned.
-  # Uses a flat 2D distance check (ignores Y axis).
+  # Blocks from chunk center - no despawning if a player is within this range.
   radius: 48
 
-  # If false, entities that have a custom name (name tag) are spared
-  # and will NOT be despawned.
-  # If true, even named entities are despawned.
+  # Despawn named (name-tagged) entities too?
   named-entity: false
 
-  # Entity types that are never despawned by instant-despawn,
-  # regardless of player distance or the named-entity setting.
-  # Full list: https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/entity/EntityType.html
+  # Never despawned, no matter what.
   ignore-entity-types:
-    - ITEM
-    - ITEM_FRAME
-    - GLOW_ITEM_FRAME
-    - WITHER
     - ENDER_DRAGON
+    - WITHER
     - VILLAGER
     - IRON_GOLEM
-    - ARMOR_STAND
-    - ENDER_PEARL
-    
+
+# ALREADY FROZEN CHUNK
+# Frozen chunks normally block every new entity and all fire. These two
+# options poke specific holes in that.
+frozen-chunk:
+
+  # Entity types allowed to spawn/be placed here, e.g. "COD" also allows
+  # using a COD_BUCKET. This is a list of ENTITY TYPES, not item names or
+  # blocks - "FIRE" does NOT belong here (fire isn't an entity; see
+  # ignore-blockstate-types below for that). Covers boats/chest boats/rafts,
+  # all minecart types, spawn eggs, armor stands, item frames, paintings,
+  # end crystals, leads (as LEASH_KNOT), and the fish buckets. Empty by
+  # default.
+  # Full list: https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/entity/EntityType.html
+  ignore-entity-types: []
+
+  # Block types exempt from the fire protections below (ignite/burn/spread).
+  # Add FIRE to let players light fires, let fire spread, and let fire burn
+  # blocks down inside a frozen chunk - all three at once, from any cause
+  # (player or natural). Leave empty to keep fire fully blocked, the
+  # default. Same idea as ignore-entity-types above, but for blocks.
+  # Full list: https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/Material.html
+  ignore-blockstate-types: []
 
 # REDSTONE PROTECTION
-# Detects infinite redstone loops by counting how many
-# distinct redstone blocks update per time window.
-# When the loop is confirmed, the chunk is frozen and
-# redstone power inside it is silenced.
+# Freezes and silences a chunk when it detects an infinite redstone loop
+# (too many redstone updates, too fast).
 redstone-protection:
 
   # Set to false to disable redstone loop detection entirely.
   enabled: true
 
-  # Length of a single measurement window in ticks (20 ticks = 1 second).
-  # Redstone update events are counted within each window.
+  # Length of one measurement window, in ticks (20 = 1 second).
   window-ticks: 20
 
-  # Maximum number of redstone update events allowed within one window
-  # before that window is considered "overloaded".
+  # Redstone updates allowed per window before it counts as "overloaded".
   max-events-per-window: 350
 
-  # How many consecutive overloaded windows must occur before the
-  # chunk is actually frozen. Prevents false positives from short bursts.
+  # Consecutive overloaded windows needed before actually freezing.
+  # Avoids false positives from short bursts.
   required-windows: 4
 
-  # Minimum number of distinct redstone block positions that must
-  # update within a window for it to count as overloaded.
-  # Helps distinguish a complex but finite circuit from an infinite loop.
+  # Minimum distinct redstone blocks that must update in a window to count.
+  # Filters out a big-but-finite circuit from a genuine infinite loop.
   min-distinct-blocks: 20
 
-  # How many seconds after a chunk loads to ignore redstone activity.
-  # Prevents false positives caused by chunks initializing on load.
+  # Seconds after a chunk loads to ignore redstone activity (avoids false
+  # positives from chunk init).
   grace-seconds: 1
 
-  # How many seconds the chunk stays frozen after a redstone loop
-  # is detected. After this time the plugin checks if it is safe to unfreeze.
+  # Seconds the chunk stays frozen before the plugin re-checks if it's safe
+  # to unfreeze.
   freeze-seconds: 10
 
-  # If true, redstone power inside the chunk is forced to 0 after
-  # the chunk is frozen, silencing the loop permanently until unmuted.
+  # Force redstone power to 0 once frozen, silencing the loop.
   mute-after-freeze: true
 
-  # How long (in seconds) the redstone mute lasts after the freeze.
-  # 0 means the mute never expires automatically — a player must
-  # manually restart it (see unmute-on-player-interact / unmute-on-border-power).
+  # Seconds the mute lasts. 0 = forever, until manually unmuted (see the
+  # two options below).
   mute-max-seconds: 0
 
-  # If true, a player interacting with a lever, button, or pressure
-  # plate inside a muted chunk will remove the mute, allowing redstone
-  # to work again from that player interaction onward.
+  # Using a lever/button/pressure plate in a muted chunk unmutes it.
   unmute-on-player-interact: true
 
-  # If true, the mute is lifted automatically when a powered redstone
-  # signal enters the chunk from a neighboring (unfrozen) chunk.
-  # Useful for machines that are controlled from outside the frozen area.
+  # Power arriving from a neighboring unfrozen chunk unmutes it automatically.
   unmute-on-border-power: true
 
+# REGION BORDER PARTICLES
+# Folia/CanvasMC only - ignored on regular Paper/Spigot. Shows a blue
+# particle wall where a player is about to cross from the region ticking
+# them into a different one. Purely visual, never blocks anything. Regions
+# resize live as players move, so this is recalculated on the fly rather
+# than precomputed.
+region-border-particles:
+
+  # Set to false to disable this entirely.
+  enabled: true
+
+  # How close (blocks) before the wall appears. Clamped 2-16.
+  distance: 4
+
 # BARRIER
-# Controls what is blocked from entering a frozen chunk
-# and how entities and items near the border are handled.
+# Controls what's blocked from entering a frozen chunk.
 barrier:
 
-  # Set to false to disable all barrier features at once.
+  # Master switch for everything below.
   enabled: true
 
   watch-projectiles:
 
-    # If true, projectiles that remain stuck inside a frozen chunk are removed.
-    # Projectiles that pass through quickly (e.g. arrows in flight) are unaffected.
+    # Remove projectiles (arrows, tridents, etc.) that get stuck inside a
+    # frozen chunk; ones passing through are untouched. Fireworks are always
+    # blocked from spawning in a frozen chunk regardless of this setting -
+    # to allow them anyway, add FIREWORK_ROCKET to
+    # frozen-chunk.ignore-entity-types.
     enabled: true
-
-    # If true, fireworks are allowed to spawn and detonate inside frozen chunks.
-    allow-fireworks: true
 
   watch-items:
 
-    # Master switch for all item-related barrier features.
+    # Master switch for item-related barrier features.
     enabled: true
 
-    # If a player standing inside a frozen chunk drops an item, the action
-    # is cancelled. Also, any item that lands inside a frozen chunk (mob drops,
-    # block drops, items thrown or rolling in from outside) is automatically
-    # moved to the nearest unfrozen neighbouring chunk.
+    # Cancel item drops by a player standing in a frozen chunk, and move any
+    # item that lands in one (mob drops, block drops, rolling/thrown items)
+    # out to the nearest unfrozen chunk.
     return-player-dropped-item: true
 
   watch-liquids:
 
-    # If true, water and lava flowing from an unfrozen chunk
-    # into a frozen chunk are blocked at the border.
+    # Block water/lava flowing from an unfrozen chunk into a frozen one.
     enabled: true
 
   watch-players:
 
-    # If true, players in Survival/Adventure mode cannot walk,
-    # teleport, or use ender pearls / chorus fruit / portals to
-    # enter a frozen chunk. Creative and Spectator mode players are always allowed in.
-    # All sub-options below have no effect when this is false.
+    # Block Survival/Adventure players from walking, teleporting, or using
+    # ender pearls/chorus fruit/portals into a frozen chunk. Creative and
+    # Spectator are always allowed through. Everything below only matters
+    # if this is true.
     enabled: false
 
-    # Knockback strength applied to the player when they are bounced back.
-    # 1.0 = full reverse velocity, 0.5 = half, 0.0 = stops dead.
+    # Bounce-back strength. 1.0 = full reverse velocity, 0 = stop dead.
     bounce-multiplier: 0.75
 
-    # If true, a player standing inside a frozen chunk sees a persistent
-    # warning in their action bar.
+    # Persistent action-bar warning while standing in a frozen chunk.
     notify-when-in-frozen: true
 
-    # Damage dealt each time a player is blocked from entering a frozen chunk.
-    # Range: 0–20. 0 = disabled. 1 = half a heart, 2 = one heart, etc.
+    # Damage per blocked entry attempt. 0-20, 0 disables it, 2 = one heart.
     damage-on-entry: 1
 
-    # Radius in blocks around the player in which the red particle wall is visible.
-    # 0 = disabled. Active range: 2–16.
+    # Radius (blocks) the red border wall is visible at. 0 disables it, 2-16 otherwise.
     particles-on-entry: 4
 
   watch-entities:
 
-    # If true, mobs and vehicles are bounced back when they try to enter a frozen chunk.
+    # Bounce back mobs/vehicles trying to enter a frozen chunk.
     enabled: true
 
-    # Knockback strength applied to entities that attempt to cross into a frozen chunk.
-    # 1.0 = full reverse velocity, 0.5 = half, 0.0 = stops dead.
+    # Bounce-back strength. Same scale as watch-players above.
     bounce-multiplier: 0.75
+
+# ADVANCED - only touch this if you know what you're doing.
+#
+# Both lists ship with sensible defaults covering vanilla Minecraft. Walking
+# into a frozen chunk is always blocked regardless of what's here - this
+# just adds extra coverage on top. Read exactly as written below, no hidden
+# fallback: trim an entry (or empty a list) and that protection is off,
+# nothing fills back in silently. A typo is ignored silently too, so a
+# mistake here can leave a quiet gap - if unsure, leave this section as is.
+advanced:
+
+  # Items that create an entity when used (armor stands, item frames,
+  # paintings, leads, mob buckets, etc.) - blocked from being placed in a
+  # frozen chunk. Boats, minecarts, spawn eggs, and firework rockets are
+  # always covered separately and don't need to be listed.
+  extra-entity-placing-items:
+    - ARMOR_STAND
+    - END_CRYSTAL
+    - ITEM_FRAME
+    - GLOW_ITEM_FRAME
+    - PAINTING
+    - LEAD
+    - COD_BUCKET
+    - SALMON_BUCKET
+    - TROPICAL_FISH_BUCKET
+    - PUFFERFISH_BUCKET
+    - AXOLOTL_BUCKET
+    - TADPOLE_BUCKET
+
+  # Teleport causes blocked from landing a player in a frozen chunk (on top
+  # of walking/ender-pearl/chorus-fruit, which are always blocked).
+  # Full list: https://jd.papermc.io/paper/1.21/org/bukkit/event/player/PlayerTeleportEvent.TeleportCause.html
+  blocked-teleport-causes:
+    - ENDER_PEARL
+    - CHORUS_FRUIT
+    - NETHER_PORTAL
+    - END_PORTAL
+    - END_GATEWAY
+    - PLUGIN
+    - DISMOUNT
+    - COMMAND
+    - UNKNOWN

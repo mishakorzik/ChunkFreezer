@@ -1,21 +1,24 @@
 name: ChunkFreezer
-version: '1.0.2-b2'
+version: '1.0.3-a1'
 main: com.heonezen.chunkfreezer.ChunkFreezerPlugin
-api-version: '1.21'
+api-version: "1.21"
 folia-supported: true
 authors:
  - HeOneZen
-description: Automatically freezes overloaded chunks.
+description: Automatically freezes overloaded chunks
 website: https://github.com/mishakorzik
 permissions:
   chunkfreezer.admin:
-    description: Access to ChunkFreezer commands.
+    description: Access to ChunkFreezer commands
     default: op
   chunkfreezer.bypass:
-    description: Bypasses all frozen chunk barriers (no command access).
+    description: Bypasses all frozen chunk barriers (no command access)
     default: false
+  chunkfreezer.notify:
+    description: Receive ChunkFreezer broadcast messages (chunk frozen/unfrozen alerts)
+    default: op
 commands:
   chunk:
-    description: ChunkFreezer management commands.
-    usage: /chunk <go|list|reload>
+    description: ChunkFreezer management commands
+    usage: /chunk <list|reload|go|despawn>
     permission: chunkfreezer.admin

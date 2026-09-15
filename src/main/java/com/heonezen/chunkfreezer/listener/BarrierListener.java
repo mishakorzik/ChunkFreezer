@@ -1,11 +1,13 @@
 package com.heonezen.chunkfreezer.listener;
 
+import com.heonezen.chunkfreezer.config.Lang;
 import com.heonezen.chunkfreezer.config.Settings;
+import com.heonezen.chunkfreezer.freeze.ChunkId;
 import com.heonezen.chunkfreezer.freeze.FrozenChunkManager;
+import com.heonezen.chunkfreezer.util.EntityTypeResolver;
 import io.papermc.paper.event.entity.EntityMoveEvent;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.Color;
 import org.bukkit.GameMode;
@@ -13,7 +15,6 @@ import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.Particle;
-import org.bukkit.Tag;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.entity.*;
@@ -32,15 +33,12 @@ import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.event.vehicle.VehicleMoveEvent;
-import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.inventory.meta.SpawnEggMeta;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.util.BoundingBox;
 import org.bukkit.util.Vector;
 
-import java.util.EnumSet;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
@@ -49,63 +47,64 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public final class BarrierListener implements Listener {
 
-    private final Plugin             plugin;
-    private final Settings           settings;
-    private final FrozenChunkManager frozen;
-    private final NamespacedKey      ownerKey;
-    private final Map<UUID, WatchState>    watch               = new ConcurrentHashMap<>();
-    private final Map<UUID, ScheduledTask> particleTasks       = new ConcurrentHashMap<>();
-    private final Map<UUID, Boolean>       playerInFrozenCache = new ConcurrentHashMap<>();
+    private final Plugin                   plugin;
+    private final Settings                 settings;
+    private final FrozenChunkManager       frozen;
+    private final Lang                     lang;
+    private final NamespacedKey            ownerKey;
+    private final Map<UUID, WatchState>    watch                = new ConcurrentHashMap<>();
+    private final Map<UUID, ScheduledTask> particleTasks        = new ConcurrentHashMap<>();
+    private final Map<UUID, Boolean>       playerInFrozenCache  = new ConcurrentHashMap<>();
+    private final Map<UUID, ChunkId>       lastCheckedChunk     = new ConcurrentHashMap<>();
+    private final Map<UUID, Long>          lastNotifyMs         = new ConcurrentHashMap<>();
+    private final Set<UUID>                adminTeleportExempt  = ConcurrentHashMap.newKeySet();
+    private final Set<UUID>                entityTeleportExempt = ConcurrentHashMap.newKeySet();
+    private final Set<UUID>                teleportInFlight     = ConcurrentHashMap.newKeySet();
+
+    private static final long NOTIFY_COOLDOWN_MS = 1000L;
+    private static final double MAX_NATURAL_SPEED_SQ = 1.0; // blocks/tick squared; above this treat as external force (piston/knockback), skip bounce
+    private static final double MIN_BOUNCE_SPEED = 0.35;    // blocks/tick; guarantees a clearly felt pushback even from a near-standstill approach
 
     private static final Particle.DustOptions BORDER_DUST = new Particle.DustOptions(Color.fromRGB(220, 30, 30), 0.85f);
-    private static final Component FROZEN_ACTIONBAR = Component.text("⚠ this chunk is frozen ⚠", NamedTextColor.RED);
+
     private static final Random RNG = new Random();
 
-    private static final Set<Material> PLACE_ENTITY_ITEMS = EnumSet.of(
-            Material.ARMOR_STAND,
-            Material.END_CRYSTAL,
-            Material.ITEM_FRAME,
-            Material.GLOW_ITEM_FRAME,
-            Material.PAINTING,
-            Material.LEAD);
+    private final Set<Material> entitySpawningItems;
+    private final Set<PlayerTeleportEvent.TeleportCause> blockedCauses;
 
-    private static final Set<Material> ENTITY_BUCKETS = EnumSet.of(
-            Material.COD_BUCKET,
-            Material.SALMON_BUCKET,
-            Material.TROPICAL_FISH_BUCKET,
-            Material.PUFFERFISH_BUCKET,
-            Material.AXOLOTL_BUCKET,
-            Material.TADPOLE_BUCKET);
-
-    @SuppressWarnings("deprecation")
-    private static final Set<PlayerTeleportEvent.TeleportCause> BLOCKED_CAUSES = EnumSet.of(
-            PlayerTeleportEvent.TeleportCause.ENDER_PEARL,
-            PlayerTeleportEvent.TeleportCause.CHORUS_FRUIT,
-            PlayerTeleportEvent.TeleportCause.NETHER_PORTAL,
-            PlayerTeleportEvent.TeleportCause.END_PORTAL,
-            PlayerTeleportEvent.TeleportCause.END_GATEWAY,
-            PlayerTeleportEvent.TeleportCause.PLUGIN,
-            PlayerTeleportEvent.TeleportCause.DISMOUNT,
-            PlayerTeleportEvent.TeleportCause.COMMAND,
-            PlayerTeleportEvent.TeleportCause.UNKNOWN);
-
-    public BarrierListener(Plugin plugin, Settings settings, FrozenChunkManager frozen) {
-        this.plugin   = plugin;
-        this.settings = settings;
-        this.frozen   = frozen;
-        this.ownerKey = new NamespacedKey(plugin, "dropOwner");
+    public BarrierListener(Plugin plugin, Settings settings, FrozenChunkManager frozen, Lang lang) {
+        this.plugin              = plugin;
+        this.settings            = settings;
+        this.frozen              = frozen;
+        this.lang                = lang;
+        this.ownerKey            = new NamespacedKey(plugin, "dropOwner");
+        this.entitySpawningItems = settings.extraEntityPlacingItems;
+        this.blockedCauses       = settings.blockedTeleportCauses;
     }
 
     public void startParticleTasks() {
         if (!needsPlayerTask()) return;
         for (Player p : Bukkit.getOnlinePlayers()) startParticleTask(p);
     }
+
     public void shutdown() {
         particleTasks.values().forEach(t -> { try { t.cancel(); } catch (Throwable ignored) {} });
         particleTasks.clear();
         playerInFrozenCache.clear();
+        lastCheckedChunk.clear();
+        lastNotifyMs.clear();
+        adminTeleportExempt.clear();
+        entityTeleportExempt.clear();
+        teleportInFlight.clear();
     }
-    private boolean enabled()         { return settings.barrierEnabled; }
+
+    private boolean enabled() { return settings.barrierEnabled; }
+    /** Whether this player (or the vehicle they're riding) was inside a frozen chunk as of the
+     *  last barrier tick (a few times a second, not a live per-call lookup) - backs the public
+     *  API's ChunkFreezerAPI#isPlayerInFrozenChunk(). */
+    public boolean isPlayerInFrozenChunk(UUID playerId) {
+        return Boolean.TRUE.equals(playerInFrozenCache.get(playerId));
+    }
     private static int cx(Location l) { return l.getBlockX() >> 4; }
     private static int cz(Location l) { return l.getBlockZ() >> 4; }
     private static boolean isExempt(Player p) {
@@ -131,8 +130,8 @@ public final class BarrierListener implements Listener {
     private boolean entersNewFrozenChunk(Entity ent, Location from, Location to) {
         return findBlockingFrozenCenter(ent, from, to) != null;
     }
-    /* Returns the world-space center of the frozen chunk-cell that {@code to} newly touches
-       (one {@code from} wasn't already touching), or null if the move doesn't enter new frozen territory. */
+    /** Returns the world-space center of the frozen chunk-cell that {@code to} newly touches
+     *  (one {@code from} wasn't already touching), or null if the move doesn't enter new frozen territory. */
     private double[] findBlockingFrozenCenter(Entity ent, Location from, Location to) {
         World w = to.getWorld();
         if (w == null) return null;
@@ -160,16 +159,35 @@ public final class BarrierListener implements Listener {
     private boolean needsPlayerTask() {
         return enabled() && settings.watchPlayersEnabled;
     }
+    /** The chat warning shown whenever a blocked entry attempt notifies the player. Built fresh
+     *  each call instead of cached, since it's only sent at most once per second per player
+     *  (see NOTIFY_COOLDOWN_MS) and simplicity wins over caching something this cheap. */
+    private Component frozenChatMessage() {
+        return lang.prefixed("messages.frozen-chat", "&cThis chunk is frozen!");
+    }
     private void sendFrozen(Player p) {
-        p.getScheduler().execute(plugin, () -> p.sendMessage(Component.text("This chunk is frozen!", NamedTextColor.RED)), null, 1L);
+        p.getScheduler().execute(plugin, () -> p.sendMessage(frozenChatMessage()), null, 1L);
     }
     private void notifyBlocked(Player p) {
+        if (!settings.watchPlayersEnabled || settings.damageOnEntry <= 0) return;
+        long now = System.currentTimeMillis();
+        Long last = lastNotifyMs.get(p.getUniqueId());
+        if (last != null && now - last < NOTIFY_COOLDOWN_MS) return;
+        lastNotifyMs.put(p.getUniqueId(), now);
         p.getScheduler().execute(plugin, () -> {
-            p.sendMessage(Component.text("This chunk is frozen!", NamedTextColor.RED));
-            if (settings.watchPlayersEnabled && settings.damageOnEntry > 0) {
-                p.damage(settings.damageOnEntry);
-            }
+            p.damage(settings.damageOnEntry);
+            p.sendMessage(frozenChatMessage());
         }, null, 1L);
+    }
+    /** Called by /chunk go right before teleporting the executing admin, so the very next
+     *  teleport (even into a frozen chunk) is allowed through unconditionally - an explicit
+     *  admin command should always succeed. Consumed (removed) the moment it's checked. */
+    public void allowNextTeleport(UUID playerId) {
+        adminTeleportExempt.add(playerId);
+    }
+    private void exemptOwnCorrection(Entity ent) {
+        if (ent instanceof Player pl) adminTeleportExempt.add(pl.getUniqueId());
+        else entityTeleportExempt.add(ent.getUniqueId());
     }
     private void returnItemToPlayer(Player p, ItemStack item, Location fallback) {
         boolean scheduled = p.getScheduler().execute(plugin, () -> {
@@ -193,30 +211,32 @@ public final class BarrierListener implements Listener {
         boolean isSplash = ent instanceof ThrownPotion || ent instanceof ThrownExpBottle;
         if (hitEntity != null && !isSplash) return; // arrows/tridents hitting a living entity: let damage apply normally
         org.bukkit.block.Block hitBlock = e.getHitBlock();
-        Location loc = hitEntity != null ? hitEntity.getLocation() : hitBlock != null ? hitBlock.getLocation().add(0.5, 0.5, 0.5) : ent.getLocation();
+        Location loc = hitEntity != null ? hitEntity.getLocation()
+                : hitBlock != null ? hitBlock.getLocation().add(0.5, 0.5, 0.5)
+                : ent.getLocation();
         World w = loc.getWorld();
         if (w == null) return;
-        Location fallback = loc;
         boolean inFrozen = frozen.isFrozen(w, cx(loc), cz(loc));
         if (!inFrozen) return;
         if (ent instanceof Trident trident && trident.getShooter() instanceof Player shooter && !isExempt(shooter)) {
             e.setCancelled(true);
             @SuppressWarnings("deprecation") ItemStack item = ((AbstractArrow) trident).getItem().clone();
             trident.remove();
-            returnItemToPlayer(shooter, item, fallback);
+            returnItemToPlayer(shooter, item, loc);
             return;
         }
         if (ent instanceof ThrownPotion potion && potion.getShooter() instanceof Player thrower && !isExempt(thrower)) {
             e.setCancelled(true);
             ItemStack item = potion.getItem().clone();
             potion.remove();
-            returnItemToPlayer(thrower, item, fallback);
+            returnItemToPlayer(thrower, item, loc);
             return;
         }
-        if (ent instanceof ThrownExpBottle bottle && bottle.getShooter() instanceof Player thrower && !isExempt(thrower)) {
+        if (ent instanceof ThrownExpBottle bottle && bottle.getShooter() instanceof Player thrower
+                && !isExempt(thrower)) {
             e.setCancelled(true);
             bottle.remove();
-            returnItemToPlayer(thrower, new ItemStack(Material.EXPERIENCE_BOTTLE, 1), fallback);
+            returnItemToPlayer(thrower, new ItemStack(Material.EXPERIENCE_BOTTLE, 1), loc);
             return;
         }
         if (!ent.isValid() || ent.isDead()) return;
@@ -251,16 +271,27 @@ public final class BarrierListener implements Listener {
         Location from = e.getFrom(), to = e.getTo();
         if (to == null) return;
         if (findBlockingFrozenCenter(p, from, to) == null) return;
-        Location safe = clampAlongPath(p, from, to);
-        e.setTo(safe);
+        e.setCancelled(true);
         p.setVelocity(new Vector());
+        if (!teleportInFlight.add(p.getUniqueId())) return; // a correction is already resolving; don't stack another
+        Location safe = clampAlongPath(p, from, to);
+        Vector bounce = computeBounce(from, to, settings.playerBounceMultiplier);
+        exemptOwnCorrection(p);
+        p.teleportAsync(safe).thenAccept(ok -> {
+            teleportInFlight.remove(p.getUniqueId());
+            if (ok) p.getScheduler().execute(plugin, () -> p.setVelocity(bounce), null, 1L);
+        });
         notifyBlocked(p);
     }
     @SuppressWarnings("deprecation")
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onPlayerTeleport(PlayerTeleportEvent e) {
-        if (!enabled() || !settings.watchPlayersEnabled || !frozen.hasAnyFrozenChunks()) return;
         Player p = e.getPlayer();
+        /** Peek, don't consume here: onPlayerTeleportWithMount is a second HIGHEST-priority
+         *  handler for this same event and needs to see the same exemption. The MONITOR-priority
+         *  onPlayerTeleportCleanup below removes it once, after both have had a chance to run. */
+        if (adminTeleportExempt.contains(p.getUniqueId())) return;
+        if (!enabled() || !settings.watchPlayersEnabled || !frozen.hasAnyFrozenChunks()) return;
         if (isExempt(p)) return;
         Location to = e.getTo(), from = e.getFrom();
         if (to == null || from == null) return;
@@ -276,7 +307,7 @@ public final class BarrierListener implements Listener {
             sendFrozen(p);
             return;
         }
-        if (!BLOCKED_CAUSES.contains(e.getCause()) || !destFrozen(to)) return;
+        if (!blockedCauses.contains(e.getCause()) || !destFrozen(to)) return;
         e.setCancelled(true); e.setTo(from);
     }
     private Location rerollChorusDestination(Location vanillaTo) {
@@ -295,12 +326,24 @@ public final class BarrierListener implements Listener {
     }
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onPlayerTeleportWithMount(PlayerTeleportEvent e) {
-        if (!enabled() || !settings.watchPlayersEnabled || !frozen.hasAnyFrozenChunks()) return;
         Player p = e.getPlayer();
-        if (p.getVehicle() == null || isExempt(p)) return;
+        if (adminTeleportExempt.contains(p.getUniqueId())) return;
+        Entity veh = p.getVehicle();
+        /** Defensive: if the server ever fires a PlayerTeleportEvent for the rider alongside the
+         *  EntityTeleportEvent for a vehicle we're correcting ourselves, honour that exemption too. */
+        if (veh != null && entityTeleportExempt.contains(veh.getUniqueId())) return;
+        if (!enabled() || !settings.watchPlayersEnabled || !frozen.hasAnyFrozenChunks()) return;
+        if (veh == null || isExempt(p)) return;
         Location to = e.getTo(), from = e.getFrom();
         if (to == null || from == null || !destFrozen(to)) return;
         e.setCancelled(true); e.setTo(from);
+    }
+    /** Runs after every other listener has had a chance to see adminTeleportExempt (both
+     *  onPlayerTeleport and onPlayerTeleportWithMount peek at it, at HIGHEST priority), then
+     *  clears the one-shot flag so it can't leak into a later, unrelated teleport. */
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onPlayerTeleportCleanup(PlayerTeleportEvent e) {
+        adminTeleportExempt.remove(e.getPlayer().getUniqueId());
     }
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onLivingMove(EntityMoveEvent e) {
@@ -310,12 +353,24 @@ public final class BarrierListener implements Listener {
         Location from = e.getFrom(), to = e.getTo();
         if (to == null) return;
         if (!entersNewFrozenChunk(le, from, to)) return;
+        boolean hasPlayerPassenger = false, allPlayersExempt = true;
+        for (Entity pass : le.getPassengers()) {
+            if (!(pass instanceof Player player)) continue;
+            hasPlayerPassenger = true;
+            if (!isExempt(player)) allPlayersExempt = false;
+        }
+        if (hasPlayerPassenger && allPlayersExempt) return;
         Location safe = clampAlongPath(le, from, to);
         e.setCancelled(true); e.setTo(safe);
+        le.setVelocity(computeBounce(from, to, settings.entityBounceMultiplier));
+        for (Entity pass : le.getPassengers()) {
+            if (pass instanceof Player player && !isExempt(player)) notifyBlocked(player);
+        }
         if (le instanceof Mob mob) mob.setTarget(null);
     }
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onEntityTeleport(EntityTeleportEvent e) {
+        if (entityTeleportExempt.contains(e.getEntity().getUniqueId())) return;
         if (!enabled() || !frozen.hasAnyFrozenChunks() || !settings.watchEntitiesEnabled) return;
         Entity ent = e.getEntity();
         if (ent instanceof Player || settings.isIgnored(ent.getType())) return;
@@ -323,6 +378,13 @@ public final class BarrierListener implements Listener {
         if (to == null) return;
         Location from = e.getFrom();
         if (entersNewFrozenChunk(ent, from, to)) e.setCancelled(true);
+    }
+    /** Mirrors onPlayerTeleportCleanup: clears the one-shot vehicle exemption after every listener
+     *  (onEntityTeleport and the defensive check in onPlayerTeleportWithMount) has had a chance to
+     *  see it, instead of consuming it the moment the first one checks. */
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onEntityTeleportCleanup(EntityTeleportEvent e) {
+        entityTeleportExempt.remove(e.getEntity().getUniqueId());
     }
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onVehicleMove(VehicleMoveEvent e) {
@@ -338,18 +400,56 @@ public final class BarrierListener implements Listener {
             if (!isExempt(player)) allPlayersExempt = false;
         }
         if (hasPlayerPassenger && allPlayersExempt) return;
+        if (!teleportInFlight.add(v.getUniqueId())) return; // a correction is already resolving; don't stack another
         Location safe = clampAlongPath(v, from, to);
-        v.teleportAsync(safe);
         for (Entity pass : v.getPassengers()) {
             if (pass instanceof Player player && !isExempt(player)) {
                 notifyBlocked(player);
             }
         }
-        v.getScheduler().execute(plugin, () -> {
-            if (!v.isValid() || v.isDead()) return;
-            v.setVelocity(new Vector());
-            if (v instanceof Mob mob) { mob.setTarget(null); mob.setAware(false); }
-        }, null, 1L);
+        final Vector bounce = computeBounce(from, to, settings.entityBounceMultiplier);
+        correctVehicle(v, safe, bounce, 0);
+    }
+    /** Teleports a vehicle (boat/minecart/etc.) back out of a frozen chunk it already physically
+     *  entered - VehicleMoveEvent can't be cancelled, so by the time we see it the vehicle has
+     *  already moved, and this after-the-fact correction is the only tool the API gives us.
+     *  exemptOwnCorrection() stops our own onEntityTeleport check from seeing this corrective
+     *  teleport as "entering a new frozen chunk" and cancelling it (which used to leave the
+     *  vehicle stuck inside the frozen chunk whenever the correction landed back in a chunk that
+     *  was itself still frozen, e.g. crossing directly between two frozen chunks). If the teleport
+     *  itself fails (async/cross-region contention), retry a few times rather than abandoning the
+     *  vehicle where it illegally ended up. */
+    private void correctVehicle(Vehicle v, Location safe, Vector bounce, int attempt) {
+        if (!v.isValid() || v.isDead()) { teleportInFlight.remove(v.getUniqueId()); return; }
+        exemptOwnCorrection(v);
+        v.teleportAsync(safe).thenAccept(ok -> {
+            if (ok) {
+                teleportInFlight.remove(v.getUniqueId());
+                v.getScheduler().execute(plugin, () -> {
+                    if (!v.isValid() || v.isDead()) return;
+                    v.setVelocity(bounce);
+                    if (v instanceof Mob mob) { mob.setTarget(null); mob.setAware(false); }
+                }, null, 1L);
+            } else if (attempt < 3) {
+                v.getScheduler().execute(plugin, () -> correctVehicle(v, safe, bounce, attempt + 1), null, 1L);
+            } else {
+                teleportInFlight.remove(v.getUniqueId());
+            }
+        });
+    }
+
+    /** Reverse-and-scale the attempted horizontal movement into a bounce-back velocity.
+     *  If the attempted delta is far beyond any normal entity movement speed (a piston push,
+     *  knockback, etc.), returns a zero vector instead of fighting that external force -
+     *  this is what actually stops "moved wrongly" warnings under sustained piston pressure. */
+    private Vector computeBounce(Location from, Location to, double multiplier) {
+        double dx = to.getX() - from.getX(), dz = to.getZ() - from.getZ();
+        double lenSq = dx * dx + dz * dz;
+        if (lenSq > MAX_NATURAL_SPEED_SQ) return new Vector(); // external force (piston/knockback); don't fight it
+        if (lenSq < 1e-9) return new Vector(); // no discernible attempted direction
+        double len = Math.sqrt(lenSq);
+        double speed = Math.max(len, MIN_BOUNCE_SPEED) * multiplier;
+        return new Vector(-dx / len * speed, 0, -dz / len * speed);
     }
     private Location clampAlongPath(Entity ent, Location from, Location to) {
         World w = to.getWorld();
@@ -359,32 +459,47 @@ public final class BarrierListener implements Listener {
         double half = Math.max(ent.getWidth() / 2.0, 0.05);
         double height = Math.max(ent.getHeight(), 0.1);
         double baseY = to.getY();
+        int[] permittedCx = new int[16], permittedCz = new int[16];
+        int permittedCount = chunkCellsOf(from, half, permittedCx, permittedCz);
         double lo = 0.0, hi = 1.0;
         for (int i = 0; i < 10; i++) {
             double mid = (lo + hi) * 0.5;
             double mx = from.getX() + dx * mid;
             double mz = from.getZ() + dz * mid;
             BoundingBox midBox = new BoundingBox(mx - half, baseY, mz - half, mx + half, baseY + height, mz + half);
-            if (boxTouchesFrozen(midBox, w)) hi = mid; else lo = mid;
+            if (touchesUnpermittedFrozenCell(midBox, w, permittedCx, permittedCz, permittedCount)) hi = mid; else lo = mid;
         }
         Location safe = to.clone();
         safe.setX(from.getX() + dx * lo);
         safe.setZ(from.getZ() + dz * lo);
         return safe;
     }
-    private boolean boxTouchesFrozen(BoundingBox box, World w) {
+    private boolean touchesUnpermittedFrozenCell(BoundingBox box, World w, int[] permittedCx, int[] permittedCz, int permittedCount) {
         int minCx = (int) Math.floor(box.getMinX()) >> 4;
         int maxCx = (int) Math.floor(box.getMaxX()) >> 4;
         int minCz = (int) Math.floor(box.getMinZ()) >> 4;
         int maxCz = (int) Math.floor(box.getMaxZ()) >> 4;
-        for (int ix = minCx; ix <= maxCx; ix++)
-            for (int iz = minCz; iz <= maxCz; iz++)
-                if (frozen.isFrozen(w, ix, iz)) return true;
+        for (int ix = minCx; ix <= maxCx; ix++) {
+            for (int iz = minCz; iz <= maxCz; iz++) {
+                if (!frozen.isFrozen(w, ix, iz)) continue;
+                boolean permitted = false;
+                for (int j = 0; j < permittedCount; j++) {
+                    if (permittedCx[j] == ix && permittedCz[j] == iz) { permitted = true; break; }
+                }
+                if (!permitted) return true;
+            }
+        }
         return false;
     }
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onEntitySpawnItemUse(PlayerInteractEvent e) {
-        if (!enabled() || !frozen.hasAnyFrozenChunks() || e.getHand() != EquipmentSlot.HAND) return;
+        /** No hand restriction here on purpose: an entity-placing item held in the OFF hand (with
+         *  an empty or non-interactive main hand) still fires this event with Hand=OFF_HAND and
+         *  still places the entity - skipping it would let a player dodge the pre-emptive block
+         *  (and waste the item) just by switching which hand it's in. onEntitySpawn would still
+         *  catch and cancel the resulting entity either way, so this is about not wasting the item,
+         *  not about a hole in the chunk protection itself. */
+        if (!enabled() || !frozen.hasAnyFrozenChunks()) return;
         ItemStack item = e.getItem();
         if (item == null || item.getType() == Material.AIR || !isEntitySpawningItem(item)) return;
         Player p = e.getPlayer();
@@ -392,6 +507,12 @@ public final class BarrierListener implements Listener {
         Location ref = clicked != null ? clicked.getLocation() : p.getLocation();
         World w = ref.getWorld();
         if (w == null || !frozen.isFrozen(w, cx(ref), cz(ref))) return;
+        /** Only worth figuring out what entity this item would create once we already know the
+         *  location is actually frozen - on a server where only a handful of chunks are ever
+         *  frozen at once, this avoids doing that work for every boat/bucket/spawn-egg use
+         *  anywhere else on the map. */
+        EntityType resulting = EntityTypeResolver.resolveWithMeta(item);
+        if (resulting != null && settings.isFrozenChunkIgnored(resulting)) return;
         e.setCancelled(true);
         p.getScheduler().execute(plugin, p::updateInventory, null, 1L);
     }
@@ -441,6 +562,7 @@ public final class BarrierListener implements Listener {
         ScheduledTask old = particleTasks.remove(id);
         if (old != null) try { old.cancel(); } catch (Throwable ignored) {}
         playerInFrozenCache.remove(id);
+        lastCheckedChunk.remove(id);
         Bukkit.getGlobalRegionScheduler().runDelayed(plugin, task -> startParticleTask(p), 2L);
     }
     @EventHandler
@@ -449,6 +571,10 @@ public final class BarrierListener implements Listener {
         ScheduledTask t = particleTasks.remove(id);
         if (t != null) try { t.cancel(); } catch (Throwable ignored) {}
         playerInFrozenCache.remove(id);
+        lastCheckedChunk.remove(id);
+        lastNotifyMs.remove(id);
+        adminTeleportExempt.remove(id);
+        teleportInFlight.remove(id);
     }
     private void startParticleTask(Player p) {
         startParticleTask(p, 0);
@@ -463,18 +589,55 @@ public final class BarrierListener implements Listener {
             Bukkit.getGlobalRegionScheduler().runDelayed(plugin, task -> startParticleTask(p, attempt + 1), 4L);
         }
     }
+    private final java.util.concurrent.atomic.AtomicBoolean tickParticlesErrorLogged = new java.util.concurrent.atomic.AtomicBoolean(false);
     private void tickParticles(Player p, ScheduledTask st) {
+        try {
+            tickParticles0(p, st);
+        } catch (Throwable t) {
+            /** Defensive: this is the safety net that corrects a player who ends up inside a frozen
+             *  chunk through something the real-time move-blocking missed (see the comment below).
+             *  An uncaught exception here would otherwise repeat every cycle (10x/second) and flood
+             *  the console - log it once so admins can still see and report it, then keep retrying
+             *  silently on later ticks rather than giving up on this player's safety net for the
+             *  rest of their session (unlike the purely cosmetic RegionBorderListener, this one
+             *  deliberately does NOT cancel the task on error). */
+            if (tickParticlesErrorLogged.compareAndSet(false, true)) {
+                plugin.getLogger().log(java.util.logging.Level.WARNING, "barrier: unexpected error in the frozen-chunk safety-net check", t);
+            }
+        }
+    }
+    private void tickParticles0(Player p, ScheduledTask st) {
         if (!p.isOnline() || !p.isValid()) { st.cancel(); return; }
         if (!settings.watchPlayersEnabled) return;
+        UUID id = p.getUniqueId();
         if (!frozen.hasAnyFrozenChunks()) {
-            playerInFrozenCache.put(p.getUniqueId(), false);
+            playerInFrozenCache.put(id, false);
+            lastCheckedChunk.remove(id);
             return;
         }
-        Location loc = p.getLocation();
+        Entity vehicle = p.getVehicle();
+        Entity ref = vehicle != null ? vehicle : p;
+        Location loc = ref.getLocation();
         World w = loc.getWorld();
-        boolean nowInFrozen = w != null && frozen.isFrozen(w, cx(loc), cz(loc));
-        boolean wasInFrozen = Boolean.TRUE.equals(playerInFrozenCache.put(p.getUniqueId(), nowInFrozen));
-        if (nowInFrozen && !isExempt(p) && !wasInFrozen) {
+        if (w == null) return;
+        ChunkId here = ChunkId.of(w, cx(loc), cz(loc));
+        ChunkId last = lastCheckedChunk.put(id, here);
+        boolean nowInFrozen = frozen.isFrozen(w, here.x(), here.z());
+        playerInFrozenCache.put(id, nowInFrozen);
+        if (nowInFrozen && last != null && !last.equals(here) && !isExempt(p)) {
+            /** The player is in a frozen chunk now, but their last known chunk (whether or not IT
+             *  was frozen) was a different one - meaning they crossed the border by some means the
+             *  barrier's real-time move-blocking didn't catch. A piston shoving them across the
+             *  border in one motion is the most common way (piston pushes reposition an entity
+             *  through block physics, not the client movement packets PlayerMoveEvent watches),
+             *  but this also catches water currents or anything else along those lines. Correct it.
+
+             *  If `last` instead equals `here`, they were ALREADY standing in this exact chunk on
+             *  the previous check too - most likely because it froze underneath them while they
+             *  stayed put - and that is deliberately left alone. Same for the very first check
+             *  after joining/respawning (`last == null`): there's no way to tell whether they
+             *  arrived just now or were already there, so it's treated as a fresh baseline rather
+             *  than assumed to be a bypass. */
             Location safe = findNearestUnfrozen(loc);
             if (safe != null) {
                 double awayX = safe.getX() - loc.getX(), awayZ = safe.getZ() - loc.getZ();
@@ -484,13 +647,20 @@ public final class BarrierListener implements Listener {
                 } else {
                     safe.setDirection(loc.getDirection());
                 }
-                p.teleportAsync(safe);
+                exemptOwnCorrection(ref);
+                ref.teleportAsync(safe).thenAccept(ok -> {
+                    if (!ok) return;
+                    p.getScheduler().execute(plugin, () -> p.setVelocity(new Vector()), null, 1L);
+                    if (vehicle != null) {
+                        vehicle.getScheduler().execute(plugin, () -> vehicle.setVelocity(new Vector()), null, 1L);
+                    }
+                });
             }
-            sendFrozen(p);
+            notifyBlocked(p);
             return;
         }
         if (settings.notifyWhenInFrozen && !isExempt(p) && nowInFrozen) {
-            p.sendActionBar(FROZEN_ACTIONBAR);
+            p.sendActionBar(lang.component("messages.frozen-actionbar", "&cThis chunk is frozen!"));
         }
         if (settings.particlesOnEntry > 0)
             spawnBorderParticles(p);
@@ -511,13 +681,11 @@ public final class BarrierListener implements Listener {
                 boolean westFrozen = frozen.isFrozen(w, fx - 1, fz);
                 boolean southFrozen = frozen.isFrozen(w, fx, fz + 1);
                 boolean northFrozen = frozen.isFrozen(w, fx, fz - 1);
-                // East face: outer border always visible; a shared internal border (east neighbor
-                // also frozen) only shows to a player standing inside this chunk or that neighbor.
+                // East face: outer border always visible; a shared internal border (east neighbor also frozen) only shows to a player standing inside this chunk or that neighbor.
                 boolean eastInsider = (pcx == fx && pcz == fz) || (pcx == fx + 1 && pcz == fz);
                 if ((!eastFrozen || eastInsider) && Math.abs(px - (x0 + 16.0)) <= d && !(pz < z0 && northFrozen) && !(pz > z0 + 16 && southFrozen))
                     drawWallFixedX(p, x0 + 16.0, z0, z0 + 16.0, pz, py, d);
-                // West face: the west neighbor (if also frozen) already owns this line via its
-                // own east face, so only draw here for a genuine outer border.
+                // West face: the west neighbor (if also frozen) already owns this line via its own east face, so only draw here for a genuine outer border.
                 if (!westFrozen && Math.abs(px - x0) <= d && !(pz < z0 && northFrozen) && !(pz > z0 + 16 && southFrozen))
                     drawWallFixedX(p, x0, z0, z0 + 16.0, pz, py, d);
                 // South face: same insider rule as East.
@@ -567,7 +735,6 @@ public final class BarrierListener implements Listener {
         }
         if (!settings.returnPlayerDroppedItem) { task.cancel(); watch.remove(item.getUniqueId()); return; }
         if (item.getPickupDelay() == Integer.MAX_VALUE) { task.cancel(); watch.remove(item.getUniqueId()); return; }
-
         String ownerStr = item.getPersistentDataContainer().get(ownerKey, PersistentDataType.STRING);
         Player owner = null;
         if (ownerStr != null) {
@@ -579,21 +746,19 @@ public final class BarrierListener implements Listener {
         Location exit = st.lastSafe;
         boolean hasValidExit = owner != null || (exit != null && exit.getWorld() != null && !frozen.isFrozen(exit.getWorld(), cx(exit), cz(exit)));
         if (!hasValidExit) return; // no safe destination yet; keep watching, retry next tick
-
         item.setPickupDelay(Integer.MAX_VALUE);
         ItemStack stack = item.getItemStack().clone();
         UUID id = item.getUniqueId();
         item.remove(); task.cancel(); watch.remove(id);
-
         if (owner != null) {
             final Player finalOwner = owner;
             finalOwner.getScheduler().execute(plugin, () -> {
-                finalOwner.getInventory().addItem(stack).values().forEach(rem -> finalOwner.getWorld().dropItemNaturally(finalOwner.getLocation(), rem));
+                finalOwner.getInventory().addItem(stack).values()
+                        .forEach(rem -> finalOwner.getWorld().dropItemNaturally(finalOwner.getLocation(), rem));
                 finalOwner.updateInventory();
             }, null, 1L);
             return;
         }
-
         final World ew = exit.getWorld();
         final Location exitFinal = exit.clone();
         Bukkit.getRegionScheduler().execute(plugin, ew, cx(exit), cz(exit), () -> ew.dropItemNaturally(exitFinal, stack));
@@ -628,13 +793,11 @@ public final class BarrierListener implements Listener {
         }
         return null;
     }
+    /** All of the actual Material -> EntityType classification lives in the shared, standalone
+     *  EntityTypeResolver, not here - this is just the admin-configurable extra list layered on
+     *  top of it (advanced.extra-entity-placing-items in config.yml). */
     private boolean isEntitySpawningItem(ItemStack stack) {
-        Material m = stack.getType();
-        if (Tag.ITEMS_BOATS.isTagged(m) || Tag.ITEMS_CHEST_BOATS.isTagged(m)) return true;
-        if (m == Material.BAMBOO_RAFT || m == Material.BAMBOO_CHEST_RAFT) return true;
-        if (m == Material.MINECART || m == Material.CHEST_MINECART || m == Material.FURNACE_MINECART || m == Material.HOPPER_MINECART || m == Material.TNT_MINECART || m == Material.COMMAND_BLOCK_MINECART) return true;
-        if (PLACE_ENTITY_ITEMS.contains(m) || ENTITY_BUCKETS.contains(m)) return true;
-        return stack.getItemMeta() instanceof SpawnEggMeta;
+        return entitySpawningItems.contains(stack.getType()) || EntityTypeResolver.isPlaceable(stack);
     }
     private static final class WatchState {
         volatile Location      lastSafe;

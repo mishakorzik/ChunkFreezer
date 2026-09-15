@@ -2,6 +2,7 @@ package com.heonezen.chunkfreezer.listener;
 
 import com.heonezen.chunkfreezer.config.Settings;
 import com.heonezen.chunkfreezer.freeze.FrozenChunkManager;
+import com.heonezen.chunkfreezer.util.EntityTypeResolver;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
@@ -12,6 +13,7 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.*;
 import org.bukkit.event.entity.*;
+import org.bukkit.event.player.PlayerBucketEmptyEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.ItemStack;
@@ -23,7 +25,7 @@ import java.util.*;
 
 public final class ProtectionListener implements Listener {
 
-    private static final int   BFS_LIMIT = 512;
+    private static final int   BFS_LIMIT = 256;
     private static final int[] DIR_X     = {1, -1, 0, 0};
     private static final int[] DIR_Z     = {0, 0, 1, -1};
 
@@ -110,10 +112,16 @@ public final class ProtectionListener implements Listener {
     public void onEntitySpawn(EntitySpawnEvent e) {
         Entity ent = e.getEntity();
         if (ent instanceof Player || ent instanceof Item) return;
-        if (manager.isIgnored(ent.getType())) return;
+        if (manager.isIgnored(ent.getType()) || settings.isFrozenChunkIgnored(ent.getType())) return;
         if (!frozen(e.getLocation())) return;
-        if (settings.watchProjectilesEnabled && ent instanceof Projectile) return;
-        if (settings.allowFireworks && ent instanceof Firework) return;
+        if (settings.watchProjectilesEnabled && ent instanceof Projectile && !(ent instanceof Firework)) return;
+        e.setCancelled(true);
+    }
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBucketEmpty(PlayerBucketEmptyEvent e) {
+        if (!frozen(e.getBlock())) return;
+        EntityType resulting = EntityTypeResolver.resolvePlaceable(e.getBucket());
+        if (resulting != null && (manager.isIgnored(resulting) || settings.isFrozenChunkIgnored(resulting))) return;
         e.setCancelled(true);
     }
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -158,11 +166,24 @@ public final class ProtectionListener implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onBlockExplode(BlockExplodeEvent e) { if (frozen(e.getBlock())) e.setCancelled(true); }
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
-    public void onIgnite(BlockIgniteEvent e) { if (frozen(e.getBlock())) e.setCancelled(true); }
+    public void onIgnite(BlockIgniteEvent e) {
+        if (!frozen(e.getBlock())) return;
+        if (settings.isFrozenChunkBlockIgnored(Material.FIRE)) return;
+        e.setCancelled(true);
+    }
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
-    public void onBurn(BlockBurnEvent e) { if (frozen(e.getBlock())) e.setCancelled(true); }
+    public void onBurn(BlockBurnEvent e) {
+        if (!frozen(e.getBlock())) return;
+        if (settings.isFrozenChunkBlockIgnored(Material.FIRE)) return;
+        e.setCancelled(true);
+    }
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
-    public void onSpread(BlockSpreadEvent e) { if (frozen(e.getBlock()) || frozen(e.getSource())) e.setCancelled(true); }
+    public void onSpread(BlockSpreadEvent e) {
+        if (!frozen(e.getBlock()) && !frozen(e.getSource())) return;
+        Block source = e.getSource();
+        if (source != null && settings.isFrozenChunkBlockIgnored(source.getType())) return;
+        e.setCancelled(true);
+    }
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPlayerInteractUnmute(PlayerInteractEvent e) {
         if (!settings.redstoneProtectionEnabled || !settings.redstoneUnmuteOnPlayerInteract) return;

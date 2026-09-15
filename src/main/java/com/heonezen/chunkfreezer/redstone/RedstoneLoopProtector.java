@@ -1,11 +1,14 @@
 package com.heonezen.chunkfreezer.redstone;
 
+import com.heonezen.chunkfreezer.config.Lang;
 import com.heonezen.chunkfreezer.config.Settings;
 import com.heonezen.chunkfreezer.freeze.FrozenChunkManager;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
+import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
 import org.bukkit.World;
+import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -22,9 +25,12 @@ public final class RedstoneLoopProtector implements Listener {
     private final Plugin plugin;
     private final Settings settings;
     private final FrozenChunkManager manager;
+    private final Lang lang;
     private final Map<Key, RsState> states = new ConcurrentHashMap<>();
 
-    public RedstoneLoopProtector(Plugin plugin, Settings settings, FrozenChunkManager manager) { this.plugin = plugin; this.settings = settings; this.manager = manager; }
+    public RedstoneLoopProtector(Plugin plugin, Settings settings, FrozenChunkManager manager, Lang lang) {
+        this.plugin = plugin; this.settings = settings; this.manager = manager; this.lang = lang;
+    }
     @EventHandler(priority = EventPriority.MONITOR)
     public void onChunkLoad(ChunkLoadEvent e) {
         long now = System.currentTimeMillis();
@@ -45,9 +51,7 @@ public final class RedstoneLoopProtector implements Listener {
         if (now < st.ignoreUntilMs) return;
         long win = windowIndex(now);
         if (st.windowIdx != win) {
-            st.consecutiveOver = (st.eventsInWindow >= settings.redstoneMaxEventsPerWindow
-                    && st.distinctInWindow >= settings.redstoneMinDistinctBlocks)
-                    ? st.consecutiveOver + 1 : 0;
+            st.consecutiveOver = (st.eventsInWindow >= settings.redstoneMaxEventsPerWindow && st.distinctInWindow >= settings.redstoneMinDistinctBlocks) ? st.consecutiveOver + 1 : 0;
             st.windowIdx = win; st.eventsInWindow = 0; st.distinctInWindow = 0; st.positions = null;
         }
         st.eventsInWindow++;
@@ -71,7 +75,7 @@ public final class RedstoneLoopProtector implements Listener {
         long now = System.currentTimeMillis();
         manager.lockUnfreezeUntil(world, cx, cz, now + settings.redstoneFreezeSeconds * 1000L);
         if (settings.redstoneMuteAfterFreeze) {
-            long muteUntil = settings.redstoneMuteMaxSeconds <= 0 ? Long.MAX_VALUE : now + settings.redstoneMuteMaxSeconds * 1000L;
+            long muteUntil = settings.redstoneMuteMaxSeconds <= 0 ? Long.MAX_VALUE : now + (settings.redstoneFreezeSeconds + settings.redstoneMuteMaxSeconds) * 1000L;
             manager.muteRedstone(world, cx, cz, muteUntil);
         }
         Bukkit.getRegionScheduler().execute(plugin, world, cx, cz, () -> {
@@ -79,8 +83,14 @@ public final class RedstoneLoopProtector implements Listener {
             Chunk chunk = world.getChunkAt(cx, cz);
             manager.freezeChunk(chunk, FrozenChunkManager.FreezeCause.REDSTONE);
             if (settings.broadcast) {
-                String msg = settings.prefix + "§8Chunk overloaded §e" + world.getName() + " §8xyz(§f" + ((cx << 4) + 8) + "§8, §f~§8, §f" + ((cz << 4) + 8) + "§8)" + " §c(redstone=" + distinct + ")";
-                Bukkit.getGlobalRegionScheduler().execute(plugin, () -> Bukkit.broadcastMessage(msg));
+                Component msg = lang.broadcastBase(world, cx, cz)
+                        .append(lang.component("messages.broadcast-redstone-suffix", "&c (redstone=%count%)", "count", distinct));
+                Bukkit.getGlobalRegionScheduler().execute(plugin, () -> {
+                    Bukkit.getConsoleSender().sendMessage(msg);
+                    for (Player pl : Bukkit.getOnlinePlayers()) {
+                        if (pl.hasPermission("chunkfreezer.notify")) pl.sendMessage(msg);
+                    }
+                });
             }
             Bukkit.getRegionScheduler().runDelayed(plugin, world, cx, cz,
                     (ScheduledTask _st) -> attemptUnfreeze(world, cx, cz),
