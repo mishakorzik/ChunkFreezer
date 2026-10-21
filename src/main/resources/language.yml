@@ -1,3 +1,5 @@
+# ChunkFreezer language file.
+#
 # Every message the plugin can show a player or the console lives here - including the /chunk
 # help menu - so the whole plugin can be translated or restyled without touching config.yml or
 # any code. Rewrite any line in any language, in any order; this file is re-read on every
@@ -14,41 +16,62 @@
 # - messages: everything else the plugin says on its own - the frozen-chunk warning a player gets,
 #   and the chat broadcast when a chunk freezes.
 
+# A prefix for every message.
 prefix: "&8[&e⚡&8] "
 
+
 commands:
+
   # Shown for any /chunk subcommand when the sender lacks chunkfreezer.admin.
   no-permission: "&cYou do not have permission to use this command."
 
+  # Shown when a /chunk subcommand is used in the short window between the plugin starting up
+  # and its internals being wired up (or while it is reloading).
+  not-ready: "&cChunkFreezer isn't fully loaded yet, try again in a moment."
+
   list:
     empty: "&aNo frozen chunks."
+
     # %count%
     header: "&6&lFrozen Chunks (%count%):"
+
     # %world% %x% %z% %cause% - the whole line is clickable and teleports to that chunk
     entry: "&8 » &f%world% &exyz(%x%, ~, %z%)&c (%cause%)"
+
     entry-hover: "&7Click to teleport"
+
     cause-redstone: "redstone loop"
+
     # %count%
     cause-entity: "entity=%count%"
 
   go:
     players-only: "&cOnly players can use this command."
+
     usage: "&cUsage: /chunk go <world> <x> <z>"
+
     # %world%
     world-not-found: "&cWorld '%world%' not found."
+
     invalid-coordinates: "&cInvalid coordinates."
 
   despawn:
     not-ready: "&cChunkFreezer isn't fully loaded yet, try again in a moment."
+
     usage: "&cUsage: /chunk despawn <world> <x> <z>"
+
     # %world%
     world-not-found: "&cWorld '%world%' not found."
+
     invalid-coordinates: "&cInvalid coordinates."
     # %x% %z% %world%
     chunk-not-loaded: "&cChunk %x%, %z% in %world% isn't loaded."
+
     # %removed%, %entity% (picked from entity-singular/entity-plural below), %x%, %z%, %world%
     success: "&aInstantly despawned %removed% %entity% in chunk %x%, %z% (%world%), skipping anything listed under instant-despawn.ignore-entity-types."
+
     entity-singular: "entity"
+
     entity-plural: "entities"
 
   reload:
@@ -62,16 +85,24 @@ commands:
       - "&e /chunk despawn <world> <x> <z>&7 - Instantly despawn entities in that chunk (skips instant-despawn.ignore-entity-types)"
       - "&e /chunk reload&7 - Reload configuration"
 
+
 messages:
+
   # Chat warning sent when a player is blocked from entering, or ends up inside, a frozen chunk.
   frozen-chat: "&cThis chunk is frozen!"
+
+  # Shown when a player tries to sleep in a bed that is inside a frozen chunk.
+  frozen-bed: "&cYou can't sleep in a frozen chunk."
+
   # Persistent action-bar warning shown the whole time a player stands inside a frozen chunk
   # (see barrier.watch-players.notify-when-in-frozen in config.yml).
   frozen-actionbar: "&cThis chunk is frozen!"
 
   # %world% %x% %z% - the shared first half of both broadcast lines below
   broadcast-base: "&7Chunk overloaded &e%world% &7xyz(&f%x%&7, &f~&7, &f%z%&7)"
+
   # %count% - appended after broadcast-base when the freeze was caused by too many entities
   broadcast-entity-suffix: "&c (entity=%count%)"
+
   # %count% - appended after broadcast-base when the freeze was caused by a redstone loop
   broadcast-redstone-suffix: "&c (redstone=%count%)"

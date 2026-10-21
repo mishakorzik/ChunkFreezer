@@ -185,6 +185,12 @@ public final class BarrierListener implements Listener {
     public void allowNextTeleport(UUID playerId) {
         adminTeleportExempt.add(playerId);
     }
+    /** Marks this entity's very next PlayerTeleportEvent/EntityTeleportEvent as exempt from the
+     *  barrier's own "is the destination frozen" check. Must be called immediately before every
+     *  corrective teleport the barrier issues on itself (bounce-back, safety-net eject, etc.) -
+     *  otherwise that correction can land back inside a chunk that is still frozen (e.g. when the
+     *  entity started inside a frozen chunk to begin with) and the barrier's own teleport listener
+     *  will cancel its own correction, silently swallowing the bounce/eject. Consumed on first use. */
     private void exemptOwnCorrection(Entity ent) {
         if (ent instanceof Player pl) adminTeleportExempt.add(pl.getUniqueId());
         else entityTeleportExempt.add(ent.getUniqueId());
@@ -232,8 +238,7 @@ public final class BarrierListener implements Listener {
             returnItemToPlayer(thrower, item, loc);
             return;
         }
-        if (ent instanceof ThrownExpBottle bottle && bottle.getShooter() instanceof Player thrower
-                && !isExempt(thrower)) {
+        if (ent instanceof ThrownExpBottle bottle && bottle.getShooter() instanceof Player thrower && !isExempt(thrower)) {
             e.setCancelled(true);
             bottle.remove();
             returnItemToPlayer(thrower, new ItemStack(Material.EXPERIENCE_BOTTLE, 1), loc);
@@ -291,15 +296,21 @@ public final class BarrierListener implements Listener {
          *  handler for this same event and needs to see the same exemption. The MONITOR-priority
          *  onPlayerTeleportCleanup below removes it once, after both have had a chance to run. */
         if (adminTeleportExempt.contains(p.getUniqueId())) return;
-        if (!enabled() || !settings.watchPlayersEnabled || !frozen.hasAnyFrozenChunks()) return;
+        if (!enabled() || !frozen.hasAnyFrozenChunks()) return;
         if (isExempt(p)) return;
         Location to = e.getTo(), from = e.getFrom();
         if (to == null || from == null) return;
+        /** Getting out of bed teleports the player onto the bed - if that bed sits in a frozen
+         *  chunk, they would be left standing inside it. This one is handled regardless of the
+         *  watch-players setting: being left stuck inside a frozen chunk is not something the
+         *  "let players walk around freely" option should allow, and the sleep itself is already
+         *  refused by ProtectionListener#onBedEnter. */
         if (e.getCause() == PlayerTeleportEvent.TeleportCause.EXIT_BED && destFrozen(to)) {
             Location safe = findNearestUnfrozen(to);
             if (safe != null) { e.setTo(safe); return; }
             e.setCancelled(true); e.setTo(from); return;
         }
+        if (!settings.watchPlayersEnabled) return;
         if (e.getCause() == PlayerTeleportEvent.TeleportCause.CHORUS_FRUIT && destFrozen(to)) {
             Location reroll = rerollChorusDestination(to);
             if (reroll != null) { e.setTo(reroll); return; }
@@ -491,7 +502,26 @@ public final class BarrierListener implements Listener {
         }
         return false;
     }
-    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    /** Pre-emptive block for every item that puts something into the world: mob buckets (fish,
+     *  axolotls, ...), water/lava/powder-snow buckets, boats, minecarts, spawn eggs, armor
+     *  stands, item frames, leads, ...
+     *
+     *  <p><b>Why this handler deliberately does NOT skip already-cancelled events:</b> since
+     *  Minecraft 1.21.9 (and therefore 1.21.11 and 26.x) the bucket is no longer used through
+     *  {@code Item#useOn}. It is used through {@code Item#use}, which the server reaches via its
+     *  "use item in air" path - and Paper <b>pre-cancels</b> the {@link PlayerInteractEvent} it
+     *  fires on that path (the block interaction itself is skipped, the item interaction isn't),
+     *  so {@link PlayerInteractEvent#isCancelled()} is already true when this handler runs. With
+     *  {@code ignoreCancelled = true} the handler would be skipped every single time a bucket was
+     *  used, and the bucket would be emptied into a frozen chunk anyway - the exact bug this
+     *  plugin is supposed to prevent.
+     *
+     *  <p>For the same reason both interaction results are denied explicitly instead of relying
+     *  on {@link PlayerInteractEvent#setCancelled(boolean)} alone: the server decides whether the
+     *  item is actually used by looking at {@code useItemInHand()} on the "use item" path and at
+     *  {@code useInteractedBlock()} on the "use item on block" path, so only denying both is
+     *  guaranteed to stop the item on every Minecraft version. */
+    @EventHandler(priority = EventPriority.HIGHEST)
     public void onEntitySpawnItemUse(PlayerInteractEvent e) {
         /** No hand restriction here on purpose: an entity-placing item held in the OFF hand (with
          *  an empty or non-interactive main hand) still fires this event with Hand=OFF_HAND and
@@ -503,18 +533,44 @@ public final class BarrierListener implements Listener {
         ItemStack item = e.getItem();
         if (item == null || item.getType() == Material.AIR || !isEntitySpawningItem(item)) return;
         Player p = e.getPlayer();
-        Block clicked = e.getClickedBlock();
-        Location ref = clicked != null ? clicked.getLocation() : p.getLocation();
-        World w = ref.getWorld();
-        if (w == null || !frozen.isFrozen(w, cx(ref), cz(ref))) return;
         /** Only worth figuring out what entity this item would create once we already know the
          *  location is actually frozen - on a server where only a handful of chunks are ever
          *  frozen at once, this avoids doing that work for every boat/bucket/spawn-egg use
          *  anywhere else on the map. */
         EntityType resulting = EntityTypeResolver.resolveWithMeta(item);
         if (resulting != null && settings.isFrozenChunkIgnored(resulting)) return;
+        if (!targetsFrozenChunk(e, p)) return;
+        e.setUseInteractedBlock(org.bukkit.event.Event.Result.DENY);
+        e.setUseItemInHand(org.bukkit.event.Event.Result.DENY);
         e.setCancelled(true);
         p.getScheduler().execute(plugin, p::updateInventory, null, 1L);
+    }
+    /** Whether this interaction would put something into a frozen chunk. Every position the item
+     *  could end up in is checked, not just the clicked one:
+     *  <ul>
+     *    <li>the clicked block itself,</li>
+     *    <li>the block the item would actually be placed into (the clicked block's face - the
+     *        exact spot a bucket empties into, and where a mob released from one appears),</li>
+     *    <li>the player's own position, for interactions with no clicked block at all
+     *        (right-clicking the air).</li>
+     *  </ul>
+     *  The second one matters at chunk borders: clicking the last block of an unfrozen chunk
+     *  while facing into the frozen one next to it places the entity *inside* the frozen chunk,
+     *  even though the clicked block itself is outside it. */
+    private boolean targetsFrozenChunk(PlayerInteractEvent e, Player p) {
+        Block clicked = e.getClickedBlock();
+        if (clicked == null) return frozen(p.getLocation());
+        if (frozen(clicked.getLocation())) return true;
+        org.bukkit.block.BlockFace face = e.getBlockFace();
+        if (face != null && face != org.bukkit.block.BlockFace.SELF) {
+            Block target = clicked.getRelative(face);
+            if (target != null && frozen(target.getLocation())) return true;
+        }
+        return false;
+    }
+    private boolean frozen(Location loc) {
+        World w = loc.getWorld();
+        return w != null && frozen.isFrozen(w, cx(loc), cz(loc));
     }
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onLiquidFlow(BlockFromToEvent e) {
@@ -560,7 +616,9 @@ public final class BarrierListener implements Listener {
         Player p = e.getPlayer();
         UUID id = p.getUniqueId();
         ScheduledTask old = particleTasks.remove(id);
-        if (old != null) try { old.cancel(); } catch (Throwable ignored) {}
+        if (old != null) try {
+            old.cancel();
+        } catch (Throwable ignored) {}
         playerInFrozenCache.remove(id);
         lastCheckedChunk.remove(id);
         Bukkit.getGlobalRegionScheduler().runDelayed(plugin, task -> startParticleTask(p), 2L);
@@ -715,7 +773,7 @@ public final class BarrierListener implements Listener {
         UUID id = entity.getUniqueId();
         if (watch.containsKey(id)) return;
         WatchState st = new WatchState();
-        st.lastSafe     = entity.getLocation().clone();
+        st.lastSafe = entity.getLocation().clone();
         st.lastVelocity = entity.getVelocity().clone();
         watch.put(id, st);
         ScheduledTask task = entity.getScheduler().runAtFixedRate(plugin, scheduled -> tickWatch((Item) entity, scheduled), () -> watch.remove(id), 3L, 3L);

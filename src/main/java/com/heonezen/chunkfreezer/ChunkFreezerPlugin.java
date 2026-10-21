@@ -38,12 +38,12 @@ public final class ChunkFreezerPlugin extends JavaPlugin {
         initComponents();
     }
     private void initComponents() {
-        settings = new Settings(getConfig(), new java.io.File(getDataFolder(), "config.yml"));
+        settings = new Settings(getConfig(), new java.io.File(getDataFolder(), "config.yml"), getLogger());
         lang = loadLang();
         manager  = new FrozenChunkManager(this, settings);
         if (chunkCommand != null) { chunkCommand.setManager(manager); chunkCommand.setLang(lang); }
         apiImpl.update(manager, settings);
-        Bukkit.getPluginManager().registerEvents(new ProtectionListener(this, settings, manager), this);
+        Bukkit.getPluginManager().registerEvents(new ProtectionListener(this, settings, manager, lang), this);
         barrierListener = new BarrierListener(this, settings, manager, lang);
         Bukkit.getPluginManager().registerEvents(barrierListener, this);
         barrierListener.startParticleTasks();
@@ -75,11 +75,23 @@ public final class ChunkFreezerPlugin extends JavaPlugin {
         if (cmd != null) { cmd.setExecutor(chunkCommand); cmd.setTabCompleter(chunkCommand); }
     }
     public void reloadPlugin() {
-        if (chunkMonitor != null) { chunkMonitor.shutdown(); chunkMonitor = null; }
-        if (barrierListener != null) { barrierListener.shutdown(); barrierListener = null; }
-        if (regionBorderListener != null) { regionBorderListener.shutdown(); regionBorderListener = null; }
+        if (chunkMonitor != null) {
+           chunkMonitor.shutdown();
+           chunkMonitor = null; 
+        }
+        if (barrierListener != null) {
+           barrierListener.shutdown();
+           barrierListener = null;
+        }
+        if (regionBorderListener != null) {
+           regionBorderListener.shutdown();
+           regionBorderListener = null;
+        }
         if (apiImpl != null) apiImpl.setBarrierListener(null);
-        if (manager != null) { manager.shutdown(); manager = null; }
+        if (manager != null) {
+            manager.shutdown();
+            manager = null;
+        }
         HandlerList.unregisterAll(this);
         registerCommand();
         reloadConfig();

@@ -25,14 +25,27 @@ public final class Lang {
         this.cfg = cfg;
         this.prefix = color(cfg.getString("prefix", "&8[&e⚡&8] "));
     }
-    private static String color(String s) { return s == null ? "" : ChatColor.translateAlternateColorCodes('&', s); }
+    private static String color(String s) {
+        return s == null ? "" : ChatColor.translateAlternateColorCodes('&', s);
+    }
+    /** The colorized string at path, with no placeholders substituted. */
     public String raw(String path, String fallback) { return color(cfg.getString(path, fallback)); }
+    /** A colorized string list at path, falling back whole (not merged line-by-line) if the key is
+     *  absent OR isn't actually a YAML list (e.g. an admin accidentally turned a multi-line list
+     *  into a single string) - so a malformed edit degrades to the English default instead of
+     *  silently showing zero lines. An admin who intentionally empties the list (an actual empty
+     *  "[]") still sees an empty list, since that's a valid, deliberately-set list. */
     public List<String> rawList(String path, List<String> fallback) {
         List<String> src = cfg.isList(path) ? cfg.getStringList(path) : fallback;
         List<String> out = new ArrayList<>(src.size());
         for (String s : src) out.add(color(s));
         return out;
     }
+    /** Colorized string at path with every %key% placeholder replaced. kv is alternating
+     *  key/value pairs, e.g. get("commands.go.world-not-found", "...", "world", "spawn"). A
+     *  single left-to-right scan, matched only against placeholders that exist in kv - so a
+     *  substituted value (e.g. a world name) is never itself re-scanned for %..% patterns, even if
+     *  it happens to contain something that looks like another placeholder. */
     public String get(String path, String fallback, Object... kv) {
         String s = raw(path, fallback);
         if (kv.length < 2) return s;
@@ -58,6 +71,8 @@ public final class Lang {
     public Component component(String path, String fallback, Object... kv) {
         return LEGACY.deserialize(get(path, fallback, kv));
     }
+    /** Same as component(), with the configured prefix prepended - for standalone status/error
+     *  messages only, never for list bullets or help sub-lines shown under their own header. */
     public Component prefixed(String path, String fallback, Object... kv) {
         return LEGACY.deserialize(prefix).append(component(path, fallback, kv));
     }

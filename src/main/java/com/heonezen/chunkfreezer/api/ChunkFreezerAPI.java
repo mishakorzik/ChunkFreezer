@@ -50,6 +50,7 @@ public interface ChunkFreezerAPI {
 
     // Whether the chunk containing this location is currently frozen. False if the location's world is somehow null.
     default boolean isChunkFrozen(Location location) {
+        if (location == null) return false;
         World w = location.getWorld();
         return w != null && isChunkFrozen(w, location.getBlockX() >> 4, location.getBlockZ() >> 4);
     }
@@ -63,6 +64,7 @@ public interface ChunkFreezerAPI {
 
     // Same as {@link #isNearFrozenChunk(World, int, int, int)}, centered on a location's chunk.
     default boolean isNearFrozenChunk(Location location, int radiusInChunks) {
+        if (location == null) return false;
         World w = location.getWorld();
         return w != null && isNearFrozenChunk(w, location.getBlockX() >> 4, location.getBlockZ() >> 4, radiusInChunks);
     }

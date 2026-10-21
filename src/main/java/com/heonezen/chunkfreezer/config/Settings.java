@@ -57,6 +57,7 @@ public final class Settings {
 
     public final Set<EntityType> frozenChunkIgnoredEntityTypes;
     public final Set<Material> frozenChunkIgnoredBlockTypes;
+    public final boolean frozenChunkRemoveNewArrivals;
 
     // Advanced zone: see the "advanced" section in config.yml for warnings before touching these.
     public final Set<Material> extraEntityPlacingItems;
@@ -66,6 +67,9 @@ public final class Settings {
     public final double  regionBorderParticleDistance;
 
     public Settings(FileConfiguration cfg, File configFile) {
+        this(cfg, configFile, null);
+    }
+    public Settings(FileConfiguration cfg, File configFile, java.util.logging.Logger logger) {
         this.entitiesProtectionEnabled = cfg.getBoolean("entities-protection.enabled", true);
         this.checkPeriodTicks = Math.max(1L, Math.min(100L, cfg.getLong("entities-protection.check-period-ticks", 40L)));
 
@@ -81,7 +85,7 @@ public final class Settings {
 
         List<String> ignoredRaw = cfg.getStringList("entities-protection.ignore-entity-types");
         if (ignoredRaw.isEmpty()) ignoredRaw = cfg.getStringList("ignore-entity-types");
-        this.ignoredEntityTypes = parseEntityTypes(ignoredRaw);
+        this.ignoredEntityTypes = parseEntityTypes(ignoredRaw, logger);
 
         this.barrierEnabled                 = cfg.getBoolean("barrier.enabled", true);
         this.watchProjectilesEnabled        = cfg.getBoolean("barrier.watch-projectiles.enabled", true);
@@ -99,7 +103,7 @@ public final class Settings {
         this.entityBounceMultiplier         = clamp(cfg.getDouble("barrier.watch-entities.bounce-multiplier", 0.75), 0.05, 1.25);
 
         this.overloadPurgeEnabled           = cfg.getBoolean("overload-purge.enabled", true);
-        this.overloadPurgeEntityTypes       = parseEntityTypes(cfg.getStringList("overload-purge.entity-types"));
+        this.overloadPurgeEntityTypes       = parseEntityTypes(cfg.getStringList("overload-purge.entity-types"), logger);
 
         this.redstoneProtectionEnabled      = cfg.getBoolean("redstone-protection.enabled", true);
         this.redstoneWindowTicks            = clampInt(cfg.getInt("redstone-protection.window-ticks", 20), 1, 200);
@@ -116,10 +120,11 @@ public final class Settings {
         this.instantDespawnEnabled          = cfg.getBoolean("instant-despawn.enabled", true);
         this.instantDespawnRadius           = Math.max(1, cfg.getInt("instant-despawn.radius", 48));
         this.instantDespawnNamedEntity      = cfg.getBoolean("instant-despawn.named-entity", false);
-        this.instantDespawnIgnoreTypes      = parseEntityTypes(cfg.getStringList("instant-despawn.ignore-entity-types"));
+        this.instantDespawnIgnoreTypes      = parseEntityTypes(cfg.getStringList("instant-despawn.ignore-entity-types"), logger);
 
-        this.frozenChunkIgnoredEntityTypes  = parseEntityTypes(cfg.getStringList("frozen-chunk.ignore-entity-types"));
-        this.frozenChunkIgnoredBlockTypes   = parseMaterials(cfg.getStringList("frozen-chunk.ignore-blockstate-types"));
+        this.frozenChunkIgnoredEntityTypes  = parseEntityTypes(cfg.getStringList("frozen-chunk.ignore-entity-types"), logger);
+        this.frozenChunkIgnoredBlockTypes   = parseMaterials(cfg.getStringList("frozen-chunk.ignore-blockstate-types"), logger);
+        this.frozenChunkRemoveNewArrivals   = cfg.getBoolean("frozen-chunk.remove-new-arrivals", true);
 
         /** Read directly from the file on disk rather than cfg.getStringList(): JavaPlugin#getConfig()
          *  attaches the plugin jar's bundled config.yml as a fallback "defaults" layer, so an entry
@@ -128,7 +133,7 @@ public final class Settings {
          *  server's own config doesn't list anything for them - nothing more, nothing implicit. */
         List<String> rawExtraItems = readOwnStringList(configFile, "advanced.extra-entity-placing-items");
         List<String> rawBlockedCauses = readOwnStringList(configFile, "advanced.blocked-teleport-causes");
-        this.extraEntityPlacingItems = parseMaterials(rawExtraItems);
+        this.extraEntityPlacingItems = parseMaterials(rawExtraItems, logger);
         this.blockedTeleportCauses = parseTeleportCauses(rawBlockedCauses);
 
         this.regionBorderParticlesEnabled = cfg.getBoolean("region-border-particles.enabled", true);
@@ -172,24 +177,41 @@ public final class Settings {
         return c;
     }
     private static Set<EntityType> parseEntityTypes(List<String> raw) {
+        return parseEntityTypes(raw, null);
+    }
+    /** Parses a list of entity type names, reporting anything that isn't a known type instead of
+     *  dropping it silently: a typo in a whitelist would otherwise leave a quiet hole in the
+     *  protection with nothing in the console to explain it. */
+    private static Set<EntityType> parseEntityTypes(List<String> raw, java.util.logging.Logger logger) {
         if (raw == null || raw.isEmpty()) return Collections.emptySet();
         EnumSet<EntityType> set = EnumSet.noneOf(EntityType.class);
+        List<String> unknown = new ArrayList<>();
         for (String s : raw) {
             if (s == null || s.isBlank()) continue;
             try { set.add(EntityType.valueOf(s.trim().toUpperCase(Locale.ROOT))); }
-            catch (IllegalArgumentException ignored) {}
+            catch (IllegalArgumentException ignored) { unknown.add(s.trim()); }
         }
+        warnUnknown(logger, "entity type", unknown);
         return Collections.unmodifiableSet(set);
     }
     private static Set<Material> parseMaterials(List<String> raw) {
+        return parseMaterials(raw, null);
+    }
+    private static Set<Material> parseMaterials(List<String> raw, java.util.logging.Logger logger) {
         if (raw == null || raw.isEmpty()) return Collections.emptySet();
         EnumSet<Material> set = EnumSet.noneOf(Material.class);
+        List<String> unknown = new ArrayList<>();
         for (String s : raw) {
             if (s == null || s.isBlank()) continue;
             try { set.add(Material.valueOf(s.trim().toUpperCase(Locale.ROOT))); }
-            catch (IllegalArgumentException ignored) {}
+            catch (IllegalArgumentException ignored) { unknown.add(s.trim()); }
         }
+        warnUnknown(logger, "material", unknown);
         return Collections.unmodifiableSet(set);
+    }
+    private static void warnUnknown(java.util.logging.Logger logger, String kind, List<String> unknown) {
+        if (logger == null || unknown.isEmpty()) return;
+        logger.warning("Ignoring unknown " + kind + " name(s) in config.yml: " + String.join(", ", unknown) + " - check for typos, an unknown name silently disables that entry.");
     }
     @SuppressWarnings("deprecation")
     private static Set<PlayerTeleportEvent.TeleportCause> parseTeleportCauses(List<String> raw) {

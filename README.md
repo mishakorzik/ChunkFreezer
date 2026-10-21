@@ -1,11 +1,6 @@
 # ChunkFreezer
 Minecraft plugin that protects against crash machines.
 
-> [!WARNING]
-> **Only for Alpha version**
->
-> You're watching a documentation and plugin API only for Alpha version (plugin APIs is not available for stable/beta release)
-
 ## Compile
 ```bash
 git clone https://github.com/mishakorzik/ChunkFreezer
@@ -27,9 +22,19 @@ it isn't bundled into your own jar - ChunkFreezer will already be on the server 
 <dependency>
     <groupId>com.heonezen</groupId>
     <artifactId>chunkfreezer</artifactId>
-    <version>1.0.2</version>
+    <version>1.0.3</version>
     <scope>provided</scope>
 </dependency>
+```
+
+**Gradle:**
+```groovy
+compileOnly 'com.heonezen:chunkfreezer:1.0.3'
+```
+
+Then add it to your own `plugin.yml` so it loads first:
+```yaml
+softdepend: [ChunkFreezer]
 ```
 
 ### Getting an instance
@@ -46,18 +51,17 @@ The same instance stays valid across `/chunk reload`, so it's safe to grab once 
 `onEnable()` and keep the reference.
 
 ### Methods
-
-| Method                                                                 | Returns                                     | Notes                                                                                                                                                                                              |
-| ---------------------------------------------------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `isChunkFrozen(World, int chunkX, int chunkZ)`                         | `boolean`                                   | Chunk coordinates, not block coordinates                                                                                                                                                           |
-| `isChunkFrozen(Chunk)`                                                 | `boolean`                                   | Overload                                                                                                                                                                                           |
-| `isChunkFrozen(Location)`                                              | `boolean`                                   | Overload; `false` if the world is `null`                                                                                                                                                           |
-| `isNearFrozenChunk(World, int chunkX, int chunkZ, int radiusInChunks)` | `boolean`                                   | Square radius, center chunk included, so radius `0` = `isChunkFrozen`                                                                                                                              |
-| `isNearFrozenChunk(Location, int radiusInChunks)`                      | `boolean`                                   | Overload                                                                                                                                                                                           |
-| `isPlayerInFrozenChunk(Player)`                                        | `boolean`                                   | Player (or their vehicle) standing in a frozen chunk right now. Only tracked while `barrier.watch-players.enabled` is `true` in config.yml (`false` by default) - otherwise always returns `false` |
-| `getFreezeCause(World, int chunkX, int chunkZ)`                        | `FrozenChunkManager.FreezeCause`            | `ENTITY`, `REDSTONE`, or `null` if not frozen                                                                                                                                                      |
-| `getFrozenChunks()`                                                    | `Collection<FrozenChunkManager.FrozenInfo>` | Snapshot of every frozen chunk, across all worlds, right now                                                                                                                                       |
-| `isBarrierEnabled()`                                                   | `boolean`                                   | Whether the movement/item/projectile barrier is active (`barrier.enabled` in config.yml)                                                                                                           |
+| Method | Returns | Notes |
+|---|---|---|
+| `isChunkFrozen(World, int chunkX, int chunkZ)` | `boolean` | Chunk coordinates, not block coordinates |
+| `isChunkFrozen(Chunk)` | `boolean` | Overload |
+| `isChunkFrozen(Location)` | `boolean` | Overload; `false` if the world is `null` |
+| `isNearFrozenChunk(World, int chunkX, int chunkZ, int radiusInChunks)` | `boolean` | Square radius, center chunk included, so radius `0` = `isChunkFrozen` |
+| `isNearFrozenChunk(Location, int radiusInChunks)` | `boolean` | Overload |
+| `isPlayerInFrozenChunk(Player)` | `boolean` | Player (or their vehicle) standing in a frozen chunk right now. Only tracked while `barrier.watch-players.enabled` is `true` in config.yml (`false` by default) - otherwise always returns `false` |
+| `getFreezeCause(World, int chunkX, int chunkZ)` | `FrozenChunkManager.FreezeCause` | `ENTITY`, `REDSTONE`, or `null` if not frozen |
+| `getFrozenChunks()` | `Collection<FrozenChunkManager.FrozenInfo>` | Snapshot of every frozen chunk, across all worlds, right now |
+| `isBarrierEnabled()` | `boolean` | Whether the movement/item/projectile barrier is active (`barrier.enabled` in config.yml) |
 
 `FrozenInfo` is a record: `(UUID worldId, int cx, int cz, FreezeCause cause, int entityCount, long frozenSinceMs)`.
 Resolve `worldId` with `Bukkit.getWorld(UUID)`.

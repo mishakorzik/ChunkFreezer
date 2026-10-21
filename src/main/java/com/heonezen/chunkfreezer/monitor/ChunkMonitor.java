@@ -3,7 +3,6 @@ package com.heonezen.chunkfreezer.monitor;
 import com.heonezen.chunkfreezer.config.Lang;
 import com.heonezen.chunkfreezer.config.Settings;
 import com.heonezen.chunkfreezer.freeze.FrozenChunkManager;
-import io.papermc.paper.entity.Bucketable;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
@@ -117,8 +116,7 @@ public final class ChunkMonitor implements Listener {
     }
     @EventHandler(ignoreCancelled = true) public void onMove(PlayerMoveEvent e) {
         if (e.getTo() == null || e.getFrom().getWorld() != e.getTo().getWorld()) return;
-        if ((e.getFrom().getBlockX() >> 4) == (e.getTo().getBlockX() >> 4)
-                && (e.getFrom().getBlockZ() >> 4) == (e.getTo().getBlockZ() >> 4)) return;
+        if ((e.getFrom().getBlockX() >> 4) == (e.getTo().getBlockX() >> 4) && (e.getFrom().getBlockZ() >> 4) == (e.getTo().getBlockZ() >> 4)) return;
         refreshCoverage(e.getPlayer());
     }
     private void refreshCoverage(Player p) {
@@ -264,22 +262,9 @@ public final class ChunkMonitor implements Listener {
                 checkProjectileStuck(entities);
             if (settings.instantDespawnEnabled)
                 despawnIfAbandoned(world, cx, cz, entities);
-            cleanupBucketedEntities(entities);
+            removeNewArrivals(world, cx, cz, entities);
         }
         updateBroadcast(world, cx, cz, k, frozenNow, count, frozenNow ? manager.getFreezeCause(world, cx, cz) : null);
-    }
-    /** Safety net for a bucketable mob (cod, salmon, pufferfish, tropical fish, axolotl, tadpole)
-     *  that ends up in a frozen chunk despite the event-level blocks elsewhere
-     *  (ProtectionListener#onBucketEmpty, #onEntitySpawn) - removes it only if
-     *  {@link Bucketable#isFromBucket()} reports it was released from a bucket rather than having
-     *  spawned or bred there naturally, so anything the chunk already had before it froze is never
-     *  touched by this. Runs unconditionally whenever frozen, same as those two handlers. */
-    private void cleanupBucketedEntities(Entity[] entities) {
-        for (Entity e : entities) {
-            if (!(e instanceof Bucketable b) || !b.isFromBucket() || !e.isValid() || e.isDead()) continue;
-            if (settings.isIgnored(e.getType()) || settings.isFrozenChunkIgnored(e.getType())) continue;
-            e.remove();
-        }
     }
     /** Removes a projectile only once it's genuinely stuck, never one merely passing through - an
      *  arrow/trident/spectral arrow counts as stuck solely via {@link AbstractArrow#isInBlock()};
@@ -336,7 +321,6 @@ public final class ChunkMonitor implements Listener {
             if (!(e instanceof Item item)) continue;
             if (!item.isValid() || item.isDead()) continue;
             if (item.getPickupDelay() == Integer.MAX_VALUE) continue;
-
             String ownerStr = item.getPersistentDataContainer().get(dropOwnerKey, PersistentDataType.STRING);
             Player owner = null;
             if (ownerStr != null) {
@@ -345,19 +329,16 @@ public final class ChunkMonitor implements Listener {
                     if (candidate != null && candidate.isOnline()) owner = candidate;
                 } catch (IllegalArgumentException ignored) {}
             }
-
             int exitCx = Integer.MIN_VALUE, exitCz = Integer.MIN_VALUE;
             if (owner == null) {
                 int[] found = findExitCell(world, cx, cz);
                 if (found == null) continue; // no safe destination yet; retry next tick
                 exitCx = found[0]; exitCz = found[1];
             }
-
             item.setPickupDelay(Integer.MAX_VALUE);
             ItemStack stack = item.getItemStack().clone();
             final double itemY = item.getLocation().getY(); // captured before remove() - some Paper versions reject further calls on an already-removed entity
             item.remove();
-
             if (owner != null) {
                 final Player finalOwner = owner;
                 boolean scheduled = owner.getScheduler().execute(plugin, () -> {
@@ -367,7 +348,6 @@ public final class ChunkMonitor implements Listener {
                 if (!scheduled) dropAtNearestExit(world, cx, cz, itemY, stack);
                 continue;
             }
-
             Location exit = new Location(world, (exitCx << 4) + 8.0, itemY, (exitCz << 4) + 8.0);
             final int fExitCx = exitCx, fExitCz = exitCz;
             Bukkit.getRegionScheduler().execute(plugin, world, fExitCx, fExitCz, () -> world.dropItemNaturally(exit, stack));
@@ -389,6 +369,21 @@ public final class ChunkMonitor implements Listener {
                 doTick(w, cx, cz);
             }, 2L);
         }
+    }
+    /** The last-resort guarantee that a frozen chunk stays empty.
+     *
+     *  <p>Everything else in this plugin blocks new entities by cancelling the event that
+     *  announces them (the spawn event, the bucket event, the interact event). That works, but it
+     *  depends on the server still firing those events - and Minecraft keeps moving the goal
+     *  posts: since 1.21.9 a bucket is no longer used through {@code Item#useOn}, which moved it
+     *  onto a completely different server code path (and made Paper pre-cancel the interact event
+     *  on that path). This sweep doesn't care about any of that: it remembers which entities were
+     *  already in the chunk when it froze, and removes anything that appears afterwards. A mob
+     *  released from a bucket, a mob spawned by a spawner, an entity dropped in by another plugin -
+     *  whatever the mechanism, it doesn't survive in a frozen chunk. */
+    private void removeNewArrivals(World world, int cx, int cz, Entity[] entities) {
+        if (!settings.frozenChunkRemoveNewArrivals) return;
+        manager.removeNewArrivals(world, cx, cz, entities);
     }
     void despawnIfAbandoned(World world, int cx, int cz, Entity[] entities) {
         double r = settings.instantDespawnRadius;

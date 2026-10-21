@@ -38,7 +38,9 @@ public final class RedstoneLoopProtector implements Listener {
         states.computeIfAbsent(k, _k -> new RsState(windowIndex(now))).ignoreUntilMs = now + settings.redstoneGraceSeconds * 1000L;
     }
     @EventHandler
-    public void onChunkUnload(ChunkUnloadEvent e) { states.remove(new Key(e.getWorld().getUID(), e.getChunk().getX(), e.getChunk().getZ())); }
+    public void onChunkUnload(ChunkUnloadEvent e) {
+        states.remove(new Key(e.getWorld().getUID(), e.getChunk().getX(), e.getChunk().getZ()));
+    }
     @EventHandler(priority = EventPriority.MONITOR)
     public void onRedstone(BlockRedstoneEvent e) {
         if (e.getOldCurrent() == e.getNewCurrent()) return;
@@ -83,8 +85,7 @@ public final class RedstoneLoopProtector implements Listener {
             Chunk chunk = world.getChunkAt(cx, cz);
             manager.freezeChunk(chunk, FrozenChunkManager.FreezeCause.REDSTONE);
             if (settings.broadcast) {
-                Component msg = lang.broadcastBase(world, cx, cz)
-                        .append(lang.component("messages.broadcast-redstone-suffix", "&c (redstone=%count%)", "count", distinct));
+                Component msg = lang.broadcastBase(world, cx, cz).append(lang.component("messages.broadcast-redstone-suffix", "&c (redstone=%count%)", "count", distinct));
                 Bukkit.getGlobalRegionScheduler().execute(plugin, () -> {
                     Bukkit.getConsoleSender().sendMessage(msg);
                     for (Player pl : Bukkit.getOnlinePlayers()) {
@@ -92,9 +93,7 @@ public final class RedstoneLoopProtector implements Listener {
                     }
                 });
             }
-            Bukkit.getRegionScheduler().runDelayed(plugin, world, cx, cz,
-                    (ScheduledTask _st) -> attemptUnfreeze(world, cx, cz),
-                    Math.max(20L, settings.redstoneFreezeSeconds * 20L));
+            Bukkit.getRegionScheduler().runDelayed(plugin, world, cx, cz, (ScheduledTask _st) -> attemptUnfreeze(world, cx, cz), Math.max(20L, settings.redstoneFreezeSeconds * 20L));
         });
     }
     private void attemptUnfreeze(World world, int cx, int cz) {

@@ -45,16 +45,19 @@ public final class ChunkCommand implements CommandExecutor, TabCompleter {
     /** language.yml-backed message, auto-prefixed - for standalone status/error messages. Falls
      *  back to a plain rendering of fallback if language.yml hasn't been wired up yet (defensive
      *  only - never happens once the plugin has finished enabling). */
+
     private Component prefixedMsg(String path, String fallback, Object... kv) {
         Lang l = lang;
         return l != null ? l.prefixed(path, fallback, kv) : LEGACY.deserialize(ChatColor.translateAlternateColorCodes('&', fallback));
     }
+
     /** Same as prefixedMsg(), without the prefix - for list bullets and help sub-lines shown under
      *  their own already-prefixed header. */
     private Component msg(String path, String fallback, Object... kv) {
         Lang l = lang;
         return l != null ? l.component(path, fallback, kv) : LEGACY.deserialize(ChatColor.translateAlternateColorCodes('&', fallback));
     }
+
     private String rawStr(String path, String fallback, Object... kv) {
         Lang l = lang;
         return l != null ? l.get(path, fallback, kv) : fallback;
@@ -66,13 +69,22 @@ public final class ChunkCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(prefixedMsg("commands.no-permission", "&cYou do not have permission to use this command."));
             return true;
         }
-        if (args.length == 0) { sendHelp(sender); return true; }
+        if (args.length == 0) {
+             sendHelp(sender);
+             return true;
+        }
+        /** The manager is only wired up once the plugin finished enabling (or reloaded) - a
+         *  command that lands in that window would otherwise throw an NPE. */
+        if (manager == null) {
+            sender.sendMessage(prefixedMsg("commands.not-ready", "&cChunkFreezer isn't fully loaded yet, try again in a moment."));
+            return true;
+        }
         switch (args[0].toLowerCase()) {
-            case "list"    -> handleList(sender);
-            case "reload"  -> handleReload(sender);
-            case "go"      -> handleGo(sender, args);
+            case "list" -> handleList(sender);
+            case "reload" -> handleReload(sender);
+            case "go" -> handleGo(sender, args);
             case "despawn" -> handleDespawn(sender, args);
-            default        -> sendHelp(sender);
+            default -> sendHelp(sender);
         }
         return true;
     }
@@ -126,8 +138,7 @@ public final class ChunkCommand implements CommandExecutor, TabCompleter {
         }
         Bukkit.getRegionScheduler().execute(plugin, world, cx, cz, () -> {
             if (!world.isChunkLoaded(cx, cz)) {
-                sender.sendMessage(prefixedMsg("commands.despawn.chunk-not-loaded", "&cChunk %x%, %z% in %world% isn't loaded.",
-                        "x", cx, "z", cz, "world", world.getName()));
+                sender.sendMessage(prefixedMsg("commands.despawn.chunk-not-loaded", "&cChunk %x%, %z% in %world% isn't loaded.", "x", cx, "z", cz, "world", world.getName()));
                 return;
             }
             int removed = cm.instantDespawnChunk(world, cx, cz);
@@ -151,7 +162,11 @@ public final class ChunkCommand implements CommandExecutor, TabCompleter {
         return world;
     }
     private int[] parseXZ(CommandSender sender, String cmdKey, String[] args) {
-        try { return new int[]{ Integer.parseInt(args[2]), Integer.parseInt(args[3]) }; }
+        try {
+            return new int[] {
+                Integer.parseInt(args[2]), Integer.parseInt(args[3])
+            };
+        }
         catch (NumberFormatException ex) {
             sender.sendMessage(prefixedMsg("commands." + cmdKey + ".invalid-coordinates", "&cInvalid coordinates."));
             return null;

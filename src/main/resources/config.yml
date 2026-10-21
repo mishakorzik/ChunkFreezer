@@ -1,5 +1,9 @@
+# Every message the plugin sends (including the /chunk help menu and its own prefix) lives in
+# language.yml instead of here - edit that file to translate or restyle any text.
+
 # Broadcast a chat message to everyone when a chunk freezes/unfreezes.
 broadcast: true
+
 
 # OVERLOAD PURGE
 # Before freezing a chunk, delete these entity types first - the chunk might
@@ -18,6 +22,7 @@ overload-purge:
     - WIND_CHARGE
     - SNOWBALL
 
+
 # ENTITIES PROTECTION
 # Freezes a chunk when too many entities pile up in it.
 entities-protection:
@@ -25,7 +30,7 @@ entities-protection:
   # Set to false to disable entity-based freezing entirely.
   enabled: true
 
-  # How often (ticks) to check each chunk. 20 = 1 second. Min 20.
+  # How often (ticks) to check each chunk. 20 = 1 second. Clamped to 1-100.
   check-period-ticks: 40
 
   # Freeze when entity count reaches this...
@@ -53,6 +58,7 @@ entities-protection:
     - WITHER
     - WARDEN
 
+
 # INSTANT DESPAWN
 # In a frozen chunk with no player nearby, remove eligible entities right
 # away instead of waiting. The ignore-entity-types list below is also used by
@@ -75,9 +81,10 @@ instant-despawn:
     - VILLAGER
     - IRON_GOLEM
 
+
 # ALREADY FROZEN CHUNK
-# Frozen chunks normally block every new entity and all fire. These two
-# options poke specific holes in that.
+# Frozen chunks normally block every new entity and all fire. These options
+# poke specific holes in that.
 frozen-chunk:
 
   # Entity types allowed to spawn/be placed here, e.g. "COD" also allows
@@ -87,6 +94,11 @@ frozen-chunk:
   # all minecart types, spawn eggs, armor stands, item frames, paintings,
   # end crystals, leads (as LEASH_KNOT), and the fish buckets. Empty by
   # default.
+  #
+  # NOTE: an entry here is the ONLY way a mob bucket can be used inside a
+  # frozen chunk. Without it, releasing a fish (or any other mob) from a
+  # bucket into a frozen chunk is blocked, exactly like releasing water
+  # there is - the mob never appears.
   # Full list: https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/entity/EntityType.html
   ignore-entity-types: []
 
@@ -97,6 +109,33 @@ frozen-chunk:
   # default. Same idea as ignore-entity-types above, but for blocks.
   # Full list: https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/Material.html
   ignore-blockstate-types: []
+
+  # Remove entities that show up inside a frozen chunk after it froze - a mob
+  # released from a bucket, a mob spawned by a spawner, an entity dropped in
+  # by another plugin. The entities that were already there when the chunk
+  # froze (the ones that caused it) are never touched.
+  #
+  # This is the safety net that keeps a frozen chunk empty even if a future
+  # Minecraft version changes how entities are spawned and the usual events
+  # stop firing. Dropped items and projectiles are not affected: items are
+  # moved out of the chunk (and returned to their owner) instead, and only
+  # projectiles that get stuck are removed. Leave this on unless you have a
+  # reason to turn it off.
+  remove-new-arrivals: true
+
+  # A player cannot fall asleep in a bed inside a frozen chunk - the sleep is
+  # simply refused. Sleeping there would keep the chunk alive (a sleeping
+  # player counts as "somebody is around", and the plugin only cleans a
+  # frozen chunk up when no player is near) and would leave the player
+  # standing inside the frozen chunk once they get up. Players with the
+  # chunkfreezer.bypass permission are not affected.
+  #
+  # The same goes for respawning: if a player's respawn bed is inside a
+  # frozen chunk, they come back to life just outside of it instead.
+  #
+  # (Neither of these can be turned off - a frozen chunk is a chunk the
+  # server considers unusable, and sleeping in it is never a good idea.)
+
 
 # REDSTONE PROTECTION
 # Freezes and silences a chunk when it detects an infinite redstone loop
@@ -141,6 +180,7 @@ redstone-protection:
   # Power arriving from a neighboring unfrozen chunk unmutes it automatically.
   unmute-on-border-power: true
 
+
 # REGION BORDER PARTICLES
 # Folia/CanvasMC only - ignored on regular Paper/Spigot. Shows a blue
 # particle wall where a player is about to cross from the region ticking
@@ -154,6 +194,7 @@ region-border-particles:
 
   # How close (blocks) before the wall appears. Clamped 2-16.
   distance: 4
+
 
 # BARRIER
 # Controls what's blocked from entering a frozen chunk.
@@ -214,6 +255,7 @@ barrier:
     # Bounce-back strength. Same scale as watch-players above.
     bounce-multiplier: 0.75
 
+
 # ADVANCED - only touch this if you know what you're doing.
 #
 # Both lists ship with sensible defaults covering vanilla Minecraft. Walking
@@ -225,9 +267,12 @@ barrier:
 advanced:
 
   # Items that create an entity when used (armor stands, item frames,
-  # paintings, leads, mob buckets, etc.) - blocked from being placed in a
-  # frozen chunk. Boats, minecarts, spawn eggs, and firework rockets are
-  # always covered separately and don't need to be listed.
+  # paintings, leads, ...) - blocked from being placed in a frozen chunk.
+  # Boats, minecarts, spawn eggs, and firework rockets are always covered
+  # separately and don't need to be listed. Buckets are covered too (mob
+  # buckets, water, lava, powder snow) and are always blocked - listing
+  # them here changes nothing, the list is only there for older config
+  # files.
   extra-entity-placing-items:
     - ARMOR_STAND
     - END_CRYSTAL
