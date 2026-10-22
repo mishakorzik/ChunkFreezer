@@ -99,3 +99,8 @@ for (FrozenChunkManager.FrozenInfo info : api.getFrozenChunks()) {
 ```
 
 All methods are safe to call from any thread on Folia - no need to hop to a specific region first.
+
+## Support
+
+**If you want to support me, click on the button**
+<a href="https://www.buymeacoffee.com/misakorzik"><img title="Donate" src="https://img.shields.io/badge/Donate-ChunkFreezer-blue?style=for-the-badge&logo=github"></a>
