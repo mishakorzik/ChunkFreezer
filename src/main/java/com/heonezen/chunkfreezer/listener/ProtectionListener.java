@@ -129,14 +129,19 @@ public final class ProtectionListener implements Listener {
         if (exit == null) return;
         DropPoint pt = borderPt(loc, exit.fx(), exit.fz(), exit.tx(), exit.tz());
         List<ItemStack> drops = new ArrayList<>(e.getDrops());
+        /** The XP is moved out together with the items - it used to be zeroed and simply lost. */
+        final int exp = Math.max(0, e.getDroppedExp());
+        if (drops.isEmpty() && exp == 0) return;
         e.getDrops().clear();
         e.setDroppedExp(0);
         Bukkit.getRegionScheduler().execute(plugin, w, exit.tx(), exit.tz(), () -> {
             double y = clamp(loc.getY(), w.getMinHeight() + 1, w.getMaxHeight() - 1);
-            Location dl = new Location(w, pt.x(), safeY(w, (int) pt.x(), (int) pt.z(), y), pt.z());
-            drops.stream().filter(is -> is != null && !is.getType().isAir()).forEach(is -> w.dropItem(dl, is));
+            Location dl = new Location(w, pt.x(), safeY(w, blockOf(pt.x()), blockOf(pt.z()), y), pt.z());
+            for (ItemStack is : drops) if (is != null && !is.getType().isAir()) w.dropItem(dl, is);
+            if (exp > 0) w.spawn(dl, ExperienceOrb.class, orb -> orb.setExperience(exp));
         });
     }
+    private static int blockOf(double coord) { return (int) Math.floor(coord); }
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onEntitySpawn(EntitySpawnEvent e) {
         Entity ent = e.getEntity();
@@ -220,7 +225,7 @@ public final class ProtectionListener implements Listener {
         Exit exit = findExit(w, respawn.getBlockX() >> 4, respawn.getBlockZ() >> 4, respawn);
         if (exit != null) {
             DropPoint pt = borderPt(respawn, exit.fx(), exit.fz(), exit.tx(), exit.tz());
-            e.setRespawnLocation(new Location(w, pt.x(), respawn.getY(), pt.z()));
+            e.setRespawnLocation(new Location(w, pt.x(), respawn.getY(), pt.z(), respawn.getYaw(), respawn.getPitch()));
             return;
         }
         e.setRespawnLocation(w.getSpawnLocation());
@@ -239,7 +244,7 @@ public final class ProtectionListener implements Listener {
         Bukkit.getRegionScheduler().execute(plugin, w, exit.tx(), exit.tz(), () -> {
             if (toDrop.getType().isAir()) return;
             double y = clamp(loc.getY(), w.getMinHeight() + 1, w.getMaxHeight() - 1);
-            w.dropItem(new Location(w, pt.x(), safeY(w, (int) pt.x(), (int) pt.z(), y), pt.z()), toDrop);
+            w.dropItem(new Location(w, pt.x(), safeY(w, blockOf(pt.x()), blockOf(pt.z()), y), pt.z()), toDrop);
         });
     }
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)

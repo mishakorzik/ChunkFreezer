@@ -22,14 +22,14 @@ it isn't bundled into your own jar - ChunkFreezer will already be on the server 
 <dependency>
     <groupId>com.heonezen</groupId>
     <artifactId>chunkfreezer</artifactId>
-    <version>1.0.3</version>
+    <version>1.0.4</version>
     <scope>provided</scope>
 </dependency>
 ```
 
 **Gradle:**
 ```groovy
-compileOnly 'com.heonezen:chunkfreezer:1.0.3'
+compileOnly 'com.heonezen:chunkfreezer:1.0.4'
 ```
 
 Then add it to your own `plugin.yml` so it loads first:

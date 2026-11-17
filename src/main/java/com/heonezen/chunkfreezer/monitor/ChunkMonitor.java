@@ -12,51 +12,71 @@ import org.bukkit.NamespacedKey;
 import org.bukkit.World;
 import org.bukkit.entity.AbstractArrow;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.EntityType;
 import org.bukkit.entity.ExperienceOrb;
 import org.bukkit.entity.Firework;
 import org.bukkit.entity.FishHook;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Projectile;
-import org.bukkit.inventory.ItemStack;
-import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntitySpawnEvent;
-import org.bukkit.event.player.*;
+import org.bukkit.event.player.PlayerChangedWorldEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.event.world.ChunkLoadEvent;
 import org.bukkit.event.world.ChunkUnloadEvent;
+import org.bukkit.event.world.EntitiesLoadEvent;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.Plugin;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 public final class ChunkMonitor implements Listener {
 
     private static final long REFRESH_COOLDOWN_MS = 200L;
-    /** How long a projectile must stay genuinely stuck - or an ownerless XP orb must sit - in a
-     *  frozen chunk before it's cleaned up. */
+    /** How long a projectile must stay genuinely stuck - or an XP orb must sit - in a frozen
+     *  chunk before it's cleaned up. */
     private static final long PROJECTILE_STUCK_REMOVE_MS = 3000L;
-    /** Velocity (blocks/tick, squared) below which a non-arrow projectile counts as motionless
-     *  rather than merely slow - about 0.01 blocks/tick, far below anything still actually flying. */
+    /** Velocity (blocks/tick, squared) below which a non-arrow projectile counts as motionless. */
     private static final double STUCK_VELOCITY_SQ = 1.0E-4;
+    /** Stale-entry sweep of the (global) stuck-projectile map runs at most this often, instead of
+     *  on every check of every frozen chunk. */
+    private static final long STUCK_MAP_SWEEP_INTERVAL_MS = 10_000L;
+    private static final long STUCK_ENTRY_MAX_AGE_MS = 60_000L;
+    private static final long BROADCAST_COOLDOWN_MS = 1000L;
 
     private final Plugin plugin;
     private final Settings settings;
     private final FrozenChunkManager manager;
     private final Lang lang;
     private final NamespacedKey dropOwnerKey;
+    /** Chunks are only monitored when something can freeze them or something has to be done
+     *  inside a frozen one (redstone-frozen chunks need the item/projectile/new-arrival upkeep
+     *  too, even with entities-protection off). */
+    private final boolean monitoringEnabled;
 
     private final Map<Key, ScheduledTask> monitors                = new ConcurrentHashMap<>();
-    private final Map<Key, Boolean>       msgState                = new ConcurrentHashMap<>();
-    private final Map<Key, Long>          lastMsgMs               = new ConcurrentHashMap<>();
+    private final Map<Key, Long>          lastBroadcastMs         = new ConcurrentHashMap<>();
     private final Map<UUID, Set<Key>>     coverage                = new ConcurrentHashMap<>();
     private final Map<Key, Integer>       interest                = new ConcurrentHashMap<>();
     private final Map<UUID, Long>         refreshedAt             = new ConcurrentHashMap<>();
+    private final Set<UUID>               refreshPending          = ConcurrentHashMap.newKeySet();
     private final Map<UUID, Long>         projectileStuckSinceMs  = new ConcurrentHashMap<>();
     private final Set<Key>                fastCheckScheduled      = ConcurrentHashMap.newKeySet();
     private final Map<Key, Long>          freezeGraceUntilMs      = new ConcurrentHashMap<>();
+    private final AtomicLong              lastStuckSweepMs        = new AtomicLong();
+    private final AtomicBoolean           doTickErrorLogged       = new AtomicBoolean(false);
+    private volatile boolean active = true;
 
     public ChunkMonitor(Plugin plugin, Settings settings, FrozenChunkManager manager, Lang lang) {
         this.plugin = plugin;
@@ -64,79 +84,96 @@ public final class ChunkMonitor implements Listener {
         this.manager = manager;
         this.lang = lang;
         this.dropOwnerKey = new NamespacedKey(plugin, "dropOwner");
+        this.monitoringEnabled = settings.entitiesProtectionEnabled || settings.redstoneProtectionEnabled;
     }
     public void runStartupScan() {
         Bukkit.getGlobalRegionScheduler().runDelayed(plugin, _t -> {
+            if (!active) return;
             for (Player p : Bukkit.getOnlinePlayers()) {
                 p.getScheduler().execute(plugin, () -> refreshCoverage(p), null, 1L);
             }
-            if (!settings.instantDespawnEnabled) return;
-            for (World w : Bukkit.getWorlds()) {
-                for (Chunk chunk : w.getLoadedChunks()) {
-                    if (!manager.isFrozen(w, chunk.getX(), chunk.getZ())) continue;
-                    final World fw = w; final int cx = chunk.getX(), cz = chunk.getZ();
-                    Bukkit.getRegionScheduler().execute(plugin, fw, cx, cz, () -> {
-                        if (fw.isChunkLoaded(cx, cz))
-                            despawnIfAbandoned(fw, cx, cz, fw.getChunkAt(cx, cz).getEntities());
-                    });
-                }
-            }
+            sweepAbandonedFrozenChunks(null);
         }, 20L);
     }
-    @EventHandler public void onJoin(PlayerJoinEvent e) {
+    /** Runs the instant-despawn check on every loaded frozen chunk (optionally of one world), each
+     *  on its own region thread. Iterates the (small) frozen set rather than World#getLoadedChunks(),
+     *  which is both far larger and not safe to call off the owning thread on Folia. */
+    private void sweepAbandonedFrozenChunks(World onlyWorld) {
+        if (!active || !settings.instantDespawnEnabled) return;
+        for (FrozenChunkManager.FrozenInfo info : manager.getFrozenChunks()) {
+            World w = Bukkit.getWorld(info.worldId());
+            if (w == null || (onlyWorld != null && !onlyWorld.getUID().equals(info.worldId()))) continue;
+            int cx = info.cx(), cz = info.cz();
+            if (!w.isChunkLoaded(cx, cz)) continue;
+            Bukkit.getRegionScheduler().execute(plugin, w, cx, cz, () -> {
+                if (active && w.isChunkLoaded(cx, cz) && manager.isFrozen(w, cx, cz))
+                    despawnIfAbandoned(w, cx, cz, w.getChunkAt(cx, cz).getEntities());
+            });
+        }
+    }
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onJoin(PlayerJoinEvent e) {
         Player p = e.getPlayer();
         p.getScheduler().execute(plugin, () -> refreshCoverage(p), null, 1L);
     }
-    @EventHandler public void onQuit(PlayerQuitEvent e) {
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onQuit(PlayerQuitEvent e) {
         Player qp = e.getPlayer();
-        Location ql = qp.getLocation();
-        World qw = ql.getWorld();
+        World qw = qp.getWorld();
         removeCoverage(qp.getUniqueId());
-        if (!settings.instantDespawnEnabled || qw == null) return;
-        Bukkit.getGlobalRegionScheduler().runDelayed(plugin, t -> {
-            for (Chunk chunk : qw.getLoadedChunks()) {
-                int cx = chunk.getX(), cz = chunk.getZ();
-                if (!manager.isFrozen(qw, cx, cz)) continue;
-                Bukkit.getRegionScheduler().execute(plugin, qw, cx, cz, () -> {
-                    if (qw.isChunkLoaded(cx, cz))
-                        despawnIfAbandoned(qw, cx, cz, qw.getChunkAt(cx, cz).getEntities());
-                });
-            }
-        }, 10L);
+        if (!settings.instantDespawnEnabled || !manager.hasAnyFrozenChunks()) return;
+        Bukkit.getGlobalRegionScheduler().runDelayed(plugin, t -> sweepAbandonedFrozenChunks(qw), 10L);
     }
-    @EventHandler public void onWorldChange(PlayerChangedWorldEvent e) {
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onWorldChange(PlayerChangedWorldEvent e) {
         Player p = e.getPlayer();
         removeCoverage(p.getUniqueId());
         p.getScheduler().execute(plugin, () -> refreshCoverage(p), null, 1L);
     }
-    @EventHandler(ignoreCancelled = true) public void onTeleport(PlayerTeleportEvent e) {
-        if (e.getTo() == null) return;
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onTeleport(PlayerTeleportEvent e) {
         Player p = e.getPlayer();
         p.getScheduler().execute(plugin, () -> refreshCoverage(p), null, 2L);
     }
-    @EventHandler(ignoreCancelled = true) public void onMove(PlayerMoveEvent e) {
-        if (e.getTo() == null || e.getFrom().getWorld() != e.getTo().getWorld()) return;
-        if ((e.getFrom().getBlockX() >> 4) == (e.getTo().getBlockX() >> 4) && (e.getFrom().getBlockZ() >> 4) == (e.getTo().getBlockZ() >> 4)) return;
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onMove(PlayerMoveEvent e) {
+        Location from = e.getFrom(), to = e.getTo();
+        if ((from.getBlockX() >> 4) == (to.getBlockX() >> 4) && (from.getBlockZ() >> 4) == (to.getBlockZ() >> 4)
+                && from.getWorld() == to.getWorld()) return;
         refreshCoverage(e.getPlayer());
     }
+    /** Recomputes which chunks this player keeps monitored. Rate-limited, but never lossy: a
+     *  refresh that lands inside the cooldown schedules one trailing refresh for when it ends
+     *  (the old version simply dropped it, so e.g. a teleport right after crossing a chunk
+     *  border left the destination area unmonitored until the player crossed another border).
+     *  Must run on the player's own thread. */
     private void refreshCoverage(Player p) {
-        if (!settings.entitiesProtectionEnabled) return;
-        if (p == null || !p.isOnline()) return;
+        if (!active || !monitoringEnabled || p == null || !p.isOnline()) return;
+        UUID pid = p.getUniqueId();
         long now = System.currentTimeMillis();
-        Long last = refreshedAt.get(p.getUniqueId());
-        if (last != null && now - last < REFRESH_COOLDOWN_MS) return;
-        refreshedAt.put(p.getUniqueId(), now);
+        Long last = refreshedAt.get(pid);
+        if (last != null && now - last < REFRESH_COOLDOWN_MS) {
+            if (refreshPending.add(pid)) {
+                long delayTicks = (REFRESH_COOLDOWN_MS - (now - last)) / 50L + 1L;
+                boolean scheduled = p.getScheduler().execute(plugin, () -> {
+                    refreshPending.remove(pid);
+                    refreshCoverage(p);
+                }, () -> refreshPending.remove(pid), Math.max(1L, delayTicks));
+                if (!scheduled) refreshPending.remove(pid);
+            }
+            return;
+        }
+        refreshedAt.put(pid, now);
         World w = p.getWorld();
         Location pLoc = p.getLocation();
         int pcx = pLoc.getBlockX() >> 4;
         int pcz = pLoc.getBlockZ() >> 4;
         int r = Math.max(2, Math.min(32, w.getSimulationDistance() + 1));
         UUID worldId = w.getUID();
-        Set<Key> next = new HashSet<>((2 * r + 1) * (2 * r + 1) + 1, 0.9f);
+        Set<Key> next = new HashSet<>((int) (((2 * r + 1) * (2 * r + 1)) / 0.75f) + 1);
         for (int dx = -r; dx <= r; dx++)
             for (int dz = -r; dz <= r; dz++)
                 next.add(new Key(worldId, pcx + dx, pcz + dz));
-        UUID pid = p.getUniqueId();
         Set<Key> prev = coverage.put(pid, Collections.unmodifiableSet(next));
         if (prev == null) {
             for (Key k : next) if (interest.merge(k, 1, Integer::sum) == 1) startIfLoaded(w, k);
@@ -155,39 +192,53 @@ public final class ChunkMonitor implements Listener {
             if (cur == null || cur <= 1) {
                 ScheduledTask t = monitors.remove(key);
                 if (t != null) { try { t.cancel(); } catch (Throwable ignored) {} }
-                msgState.remove(key);
-                lastMsgMs.remove(key);
                 return null;
             }
             return cur - 1;
         });
     }
-    @EventHandler public void onChunkLoad(ChunkLoadEvent e) {
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onChunkLoad(ChunkLoadEvent e) {
         Key k = new Key(e.getWorld().getUID(), e.getChunk().getX(), e.getChunk().getZ());
         if (settings.entitiesGraceSeconds > 0) {
             freezeGraceUntilMs.put(k, System.currentTimeMillis() + settings.entitiesGraceSeconds * 1000L);
         }
         if (interest.getOrDefault(k, 0) > 0) ensureMonitored(e.getWorld(), k.cx(), k.cz());
-        if (settings.entitiesProtectionEnabled && settings.destroyThreshold > 0) {
-            World w = e.getWorld();
-            int cx = e.getChunk().getX(), cz = e.getChunk().getZ();
-            Bukkit.getRegionScheduler().execute(plugin, w, cx, cz, () -> {
-                if (!w.isChunkLoaded(cx, cz)) return;
-                Entity[] loadedEntities = w.getChunkAt(cx, cz).getEntities();
-                if (settings.countNonIgnoredEntities(loadedEntities) > settings.destroyThreshold) {
-                    for (Entity ent : loadedEntities) {
-                        if (!(ent instanceof Player) && !settings.isIgnored(ent.getType())) ent.remove();
-                    }
-                }
-            });
+    }
+    /** Entities are loaded separately from (and usually after) the chunk itself on Paper/Folia,
+     *  so destroy-threshold has to look at them here - at ChunkLoadEvent time the chunk usually
+     *  doesn't have its entities yet, which made the old check miss overloaded chunks. Fires on
+     *  the thread that owns the chunk. */
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onEntitiesLoad(EntitiesLoadEvent e) {
+        if (!settings.entitiesProtectionEnabled) return;
+        Chunk chunk = e.getChunk();
+        Key k = new Key(e.getWorld().getUID(), chunk.getX(), chunk.getZ());
+        if (settings.entitiesGraceSeconds > 0) {
+            freezeGraceUntilMs.put(k, System.currentTimeMillis() + settings.entitiesGraceSeconds * 1000L);
+        }
+        if (settings.destroyThreshold <= 0) return;
+        List<Entity> loaded = e.getEntities();
+        if (loaded.size() <= settings.destroyThreshold) return; // can't exceed it, skip the count
+        if (settings.countNonIgnoredEntities(loaded) <= settings.destroyThreshold) return;
+        int removed = 0;
+        for (Entity ent : loaded) {
+            if (ent instanceof Player || !ent.isValid() || settings.isIgnored(ent.getType())) continue;
+            ent.remove();
+            removed++;
+        }
+        if (removed > 0) {
+            plugin.getLogger().info("destroy-threshold: removed " + removed + " entities from chunk "
+                    + chunk.getX() + ", " + chunk.getZ() + " in " + e.getWorld().getName() + " on load.");
         }
     }
-    @EventHandler public void onChunkUnload(ChunkUnloadEvent e) {
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onChunkUnload(ChunkUnloadEvent e) {
         World w = e.getWorld(); int cx = e.getChunk().getX(), cz = e.getChunk().getZ();
         Key k = new Key(w.getUID(), cx, cz);
         ScheduledTask t = monitors.remove(k);
-        if (t != null) t.cancel();
-        msgState.remove(k); lastMsgMs.remove(k); freezeGraceUntilMs.remove(k);
+        if (t != null) { try { t.cancel(); } catch (Throwable ignored) {} }
+        lastBroadcastMs.remove(k); freezeGraceUntilMs.remove(k);
         if (manager.isFrozen(w, cx, cz)) manager.unfreezeChunk(e.getChunk());
     }
     private void startIfLoaded(World w, Key k) {
@@ -195,108 +246,102 @@ public final class ChunkMonitor implements Listener {
             ensureMonitored(w, k.cx(), k.cz());
     }
     private void ensureMonitored(World world, int cx, int cz) {
+        if (!active || !monitoringEnabled) return;
         Key k = new Key(world.getUID(), cx, cz);
-        if (monitors.containsKey(k) || interest.getOrDefault(k, 0) <= 0) return;
-        ScheduledTask t = Bukkit.getRegionScheduler().runAtFixedRate(
-                plugin, world, cx, cz,
-                st -> tick(world, cx, cz, st),
-                1L, settings.checkPeriodTicks);
-        monitors.put(k, t);
+        if (interest.getOrDefault(k, 0) <= 0) return;
+        // computeIfAbsent: two threads racing here can never schedule two tasks for one chunk.
+        monitors.computeIfAbsent(k, key -> Bukkit.getRegionScheduler().runAtFixedRate(
+                plugin, world, cx, cz, st -> tick(world, key, st), 1L, settings.checkPeriodTicks));
     }
-    private void tick(World world, int cx, int cz, ScheduledTask st) {
-        Key k = new Key(world.getUID(), cx, cz);
-        if (interest.getOrDefault(k, 0) <= 0) {
-            st.cancel(); monitors.remove(k); msgState.remove(k); lastMsgMs.remove(k);
+    private void tick(World world, Key k, ScheduledTask st) {
+        if (!active || interest.getOrDefault(k, 0) <= 0 || !world.isChunkLoaded(k.cx(), k.cz())) {
+            st.cancel();
+            monitors.remove(k, st); // only ever our own entry, never a newer task for the same chunk
             return;
         }
-        doTick(world, cx, cz);
+        doTick(world, k.cx(), k.cz());
     }
-    private final java.util.concurrent.atomic.AtomicBoolean doTickErrorLogged = new java.util.concurrent.atomic.AtomicBoolean(false);
     private void doTick(World world, int cx, int cz) {
+        if (!active) return;
         try {
             doTick0(world, cx, cz);
         } catch (Throwable t) {
-            /** Defensive: this is the core freeze/unfreeze decision loop, running on a timer for
-             *  every monitored chunk (plus an extra delayed call whenever entities spawn quickly in
-             *  one). An uncaught exception here would otherwise repeat every cycle and flood the
-             *  console - log it once so admins can still see and report it, then keep retrying
-             *  silently on later ticks (this deliberately does NOT stop monitoring the chunk). */
+            /** Core freeze/unfreeze loop: log the first failure so admins can report it, keep
+             *  retrying silently on later ticks (monitoring of the chunk is not stopped). */
             if (doTickErrorLogged.compareAndSet(false, true)) {
-                plugin.getLogger().log(java.util.logging.Level.WARNING,
-                        "entities-protection: unexpected error while checking a chunk", t);
+                plugin.getLogger().log(Level.WARNING, "entities-protection: unexpected error while checking a chunk", t);
             }
         }
     }
     private void doTick0(World world, int cx, int cz) {
         if (!world.isChunkLoaded(cx, cz)) return;
+        boolean frozenNow = manager.isFrozen(world, cx, cz);
+        if (!settings.entitiesProtectionEnabled && !frozenNow) return; // nothing could freeze it, nothing to maintain
         Chunk chunk = world.getChunkAt(cx, cz);
         Key k = new Key(world.getUID(), cx, cz);
         Entity[] entities = chunk.getEntities();
         int count = countForLimit(entities);
-        boolean frozenNow = manager.isFrozen(world, cx, cz);
-        /** overload-purge only ever runs here, right at the moment a chunk is about to freeze (past
-         *  its grace period) - a one-time attempt to bring the count back under the threshold so it
-         *  might not need to freeze at all. It must never run merely because the count is still high
-         *  while the chunk is already frozen (or during its grace period): a busy-but-already-frozen
-         *  chunk (e.g. a mob farm) would otherwise have every matching entity - including one a
-         *  player's own arrow that's simply flying through - purged on every single tick. */
-        if (!frozenNow && count >= settings.freezeThreshold) {
-            Long graceUntil = freezeGraceUntilMs.get(k);
-            if (graceUntil == null || System.currentTimeMillis() >= graceUntil) {
-                if (settings.overloadPurgeEnabled && !settings.overloadPurgeEntityTypes.isEmpty()) {
-                    purgeOverload(entities);
-                    count = countForLimit(entities);
+        boolean justFroze = false;
+        if (settings.entitiesProtectionEnabled) {
+            /** overload-purge only ever runs right at the moment a chunk is about to freeze (past
+             *  its grace period) - never merely because a frozen chunk is still busy, which would
+             *  purge every matching entity (e.g. an arrow flying through) on every single check. */
+            if (!frozenNow && count >= settings.freezeThreshold) {
+                Long graceUntil = freezeGraceUntilMs.get(k);
+                if (graceUntil == null || System.currentTimeMillis() >= graceUntil) {
+                    if (graceUntil != null) freezeGraceUntilMs.remove(k, graceUntil);
+                    if (settings.overloadPurgeEnabled && !settings.overloadPurgeEntityTypes.isEmpty()) {
+                        purgeOverload(entities);
+                        count = countForLimit(entities);
+                    }
+                    if (count >= settings.freezeThreshold) {
+                        justFroze = manager.freezeChunk(chunk, FrozenChunkManager.FreezeCause.ENTITY);
+                        frozenNow = true;
+                    }
                 }
-                if (count >= settings.freezeThreshold) {
-                    manager.freezeChunk(chunk); frozenNow = true;
-                }
+            } else if (frozenNow && count <= settings.unfreezeThreshold && !manager.isUnfreezeLocked(world, cx, cz)) {
+                manager.unfreezeChunk(chunk);
+                frozenNow = false;
             }
-        } else if (frozenNow && count <= settings.unfreezeThreshold && !manager.isUnfreezeLocked(world, cx, cz)) {
-            manager.unfreezeChunk(chunk); frozenNow = false;
         }
+        if (!frozenNow) return;
         manager.updateEntityCount(world, cx, cz, count);
-        if (frozenNow) {
-            if (settings.watchItemsEnabled && settings.returnPlayerDroppedItem)
-                redirectFrozenItems(world, cx, cz, entities);
-            if (settings.watchProjectilesEnabled)
-                checkProjectileStuck(entities);
-            if (settings.instantDespawnEnabled)
-                despawnIfAbandoned(world, cx, cz, entities);
-            removeNewArrivals(world, cx, cz, entities);
-        }
-        updateBroadcast(world, cx, cz, k, frozenNow, count, frozenNow ? manager.getFreezeCause(world, cx, cz) : null);
+        if (settings.barrierEnabled && settings.watchItemsEnabled && settings.returnPlayerDroppedItem)
+            redirectFrozenItems(world, cx, cz, entities);
+        if (settings.barrierEnabled && settings.watchProjectilesEnabled)
+            checkProjectileStuck(entities);
+        if (settings.instantDespawnEnabled)
+            despawnIfAbandoned(world, cx, cz, entities);
+        if (settings.frozenChunkRemoveNewArrivals)
+            manager.removeNewArrivals(world, cx, cz, entities);
+        if (justFroze) maybeBroadcast(world, cx, cz, k, count);
     }
     /** Removes a projectile only once it's genuinely stuck, never one merely passing through - an
-     *  arrow/trident/spectral arrow counts as stuck solely via {@link AbstractArrow#isInBlock()};
-     *  every other projectile (snowballs, thrown potions, fireballs, wind charges, etc.) has no
-     *  such "embedded" flag, so it counts as stuck only once its velocity is essentially zero -
-     *  anything still meaningfully moving is always left alone, no matter how long it's been
-     *  present (a weak shot, or one crossing several frozen chunks in a row, can take longer than
-     *  the removal delay while still airborne). A fishing bobber legitimately sits almost still for
-     *  as long as its owner is fishing, and an elytra-boost firework's motion isn't its own velocity
-     *  but its rider's - both are skipped entirely rather than judged by velocity. Ownerless XP
-     *  orbs have no velocity concept worth relying on either, so mere presence counts as stuck for
-     *  them - a frozen chunk blocks new entities, so one sitting there is never about to be
-     *  collected. */
+     *  arrow/trident counts as stuck solely via {@link AbstractArrow#isInBlock()}; every other
+     *  projectile only once its velocity is essentially zero. Fishing bobbers and fireworks are
+     *  skipped entirely (a bobber legitimately sits still, an elytra firework moves with its
+     *  rider). XP orbs in a frozen chunk count as stuck by mere presence. */
     private void checkProjectileStuck(Entity[] entities) {
         long now = System.currentTimeMillis();
         for (Entity e : entities) {
-            UUID id = e.getUniqueId();
-            if (!e.isValid() || e.isDead()) { projectileStuckSinceMs.remove(id); continue; }
             boolean stuck;
             if (e instanceof AbstractArrow arrow) stuck = arrow.isInBlock();
             else if (e instanceof ExperienceOrb) stuck = true;
             else if (e instanceof FishHook || e instanceof Firework) continue;
             else if (e instanceof Projectile) stuck = e.getVelocity().lengthSquared() < STUCK_VELOCITY_SQ;
             else continue;
-            if (!stuck) { projectileStuckSinceMs.remove(id); continue; }
-            long since = projectileStuckSinceMs.computeIfAbsent(id, k -> now);
+            UUID id = e.getUniqueId();
+            if (!e.isValid() || e.isDead() || !stuck) { projectileStuckSinceMs.remove(id); continue; }
+            long since = projectileStuckSinceMs.computeIfAbsent(id, x -> now);
             if (now - since >= PROJECTILE_STUCK_REMOVE_MS) {
                 e.remove();
                 projectileStuckSinceMs.remove(id);
             }
         }
-        projectileStuckSinceMs.entrySet().removeIf(entry -> now - entry.getValue() > 60_000L);
+        long lastSweep = lastStuckSweepMs.get();
+        if (now - lastSweep >= STUCK_MAP_SWEEP_INTERVAL_MS && lastStuckSweepMs.compareAndSet(lastSweep, now)) {
+            projectileStuckSinceMs.entrySet().removeIf(entry -> now - entry.getValue() > STUCK_ENTRY_MAX_AGE_MS);
+        }
     }
     private static final int[] EXIT_DX = {0, 0, 1, -1};
     private static final int[] EXIT_DZ = {1, -1, 0, 0};
@@ -329,15 +374,14 @@ public final class ChunkMonitor implements Listener {
                     if (candidate != null && candidate.isOnline()) owner = candidate;
                 } catch (IllegalArgumentException ignored) {}
             }
-            int exitCx = Integer.MIN_VALUE, exitCz = Integer.MIN_VALUE;
+            int[] exitCell = null;
             if (owner == null) {
-                int[] found = findExitCell(world, cx, cz);
-                if (found == null) continue; // no safe destination yet; retry next tick
-                exitCx = found[0]; exitCz = found[1];
+                exitCell = findExitCell(world, cx, cz);
+                if (exitCell == null) continue; // no safe destination yet; retry next check
             }
             item.setPickupDelay(Integer.MAX_VALUE);
             ItemStack stack = item.getItemStack().clone();
-            final double itemY = item.getLocation().getY(); // captured before remove() - some Paper versions reject further calls on an already-removed entity
+            final double itemY = item.getLocation().getY(); // captured before remove()
             item.remove();
             if (owner != null) {
                 final Player finalOwner = owner;
@@ -348,17 +392,19 @@ public final class ChunkMonitor implements Listener {
                 if (!scheduled) dropAtNearestExit(world, cx, cz, itemY, stack);
                 continue;
             }
+            final int exitCx = exitCell[0], exitCz = exitCell[1];
             Location exit = new Location(world, (exitCx << 4) + 8.0, itemY, (exitCz << 4) + 8.0);
-            final int fExitCx = exitCx, fExitCz = exitCz;
-            Bukkit.getRegionScheduler().execute(plugin, world, fExitCx, fExitCz, () -> world.dropItemNaturally(exit, stack));
+            Bukkit.getRegionScheduler().execute(plugin, world, exitCx, exitCz, () -> world.dropItemNaturally(exit, stack));
         }
     }
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onEntitySpawnAdaptive(EntitySpawnEvent e) {
+        if (!active || !settings.entitiesProtectionEnabled) return;
         Entity ent = e.getEntity();
         if (ent instanceof Player || ent instanceof Item || settings.isIgnored(ent.getType())) return;
-        World w = ent.getWorld();
-        Location eLoc = ent.getLocation();
+        Location eLoc = e.getLocation();
+        World w = eLoc.getWorld();
+        if (w == null) return;
         int cx = eLoc.getBlockX() >> 4;
         int cz = eLoc.getBlockZ() >> 4;
         Key k = new Key(w.getUID(), cx, cz);
@@ -370,53 +416,39 @@ public final class ChunkMonitor implements Listener {
             }, 2L);
         }
     }
-    /** The last-resort guarantee that a frozen chunk stays empty.
-     *
-     *  <p>Everything else in this plugin blocks new entities by cancelling the event that
-     *  announces them (the spawn event, the bucket event, the interact event). That works, but it
-     *  depends on the server still firing those events - and Minecraft keeps moving the goal
-     *  posts: since 1.21.9 a bucket is no longer used through {@code Item#useOn}, which moved it
-     *  onto a completely different server code path (and made Paper pre-cancel the interact event
-     *  on that path). This sweep doesn't care about any of that: it remembers which entities were
-     *  already in the chunk when it froze, and removes anything that appears afterwards. A mob
-     *  released from a bucket, a mob spawned by a spawner, an entity dropped in by another plugin -
-     *  whatever the mechanism, it doesn't survive in a frozen chunk. */
-    private void removeNewArrivals(World world, int cx, int cz, Entity[] entities) {
-        if (!settings.frozenChunkRemoveNewArrivals) return;
-        manager.removeNewArrivals(world, cx, cz, entities);
-    }
+    /** Instant-despawns eligible entities of a frozen chunk if no (living) player is within
+     *  instant-despawn.radius of its center. Must run on the chunk's own region thread. */
     void despawnIfAbandoned(World world, int cx, int cz, Entity[] entities) {
         double r = settings.instantDespawnRadius;
+        double rSq = r * r;
         double ccx = (cx << 4) + 8.0, ccz = (cz << 4) + 8.0;
         for (Player p : world.getPlayers()) {
             if (p.isDead()) continue;
             Location pLoc = p.getLocation();
             double dx = pLoc.getX() - ccx, dz = pLoc.getZ() - ccz;
-            if (dx * dx + dz * dz <= r * r) return;
+            if (dx * dx + dz * dz <= rSq) return;
         }
         for (Entity e : entities) {
-            if (isEligibleForInstantDespawn(e)) e.remove();
+            if (e.isValid() && isEligibleForInstantDespawn(e)) e.remove();
         }
     }
     /** Shared "is this entity allowed to be instant-despawned" rule, used both by the automatic
-     *  frozen-chunk safety net above and by the manual /chunk despawn command - so the command
-     *  always respects instant-despawn.ignore-entity-types the same way the automatic path does. */
+     *  frozen-chunk safety net and by /chunk despawn. */
     private boolean isEligibleForInstantDespawn(Entity e) {
         if (e instanceof Player) return false;
         if (e instanceof Projectile) return false;
         if (settings.isIgnored(e.getType()) || settings.isInstantDespawnIgnored(e.getType())) return false;
         if (!settings.instantDespawnNamedEntity && e.customName() != null) return false;
+        for (Entity passenger : e.getPassengers()) if (passenger instanceof Player) return false;
         return true;
     }
-    /** Manually, instantly despawns every eligible entity in a single chunk right now, regardless
-     *  of whether the chunk is frozen or whether a player is standing nearby - used by
-     *  /chunk despawn. Must be called from the region thread that owns (world, cx, cz). Returns
-     *  how many entities were actually removed. */
+    /** Manually, instantly despawns every eligible entity in a single chunk right now - used by
+     *  /chunk despawn. Must be called from the region thread that owns (world, cx, cz). */
     public int instantDespawnChunk(World world, int cx, int cz) {
         if (!world.isChunkLoaded(cx, cz)) return 0;
         int removed = 0;
         for (Entity e : world.getChunkAt(cx, cz).getEntities()) {
-            if (!isEligibleForInstantDespawn(e)) continue;
+            if (!e.isValid() || !isEligibleForInstantDespawn(e)) continue;
             e.remove();
             removed++;
         }
@@ -428,38 +460,29 @@ public final class ChunkMonitor implements Listener {
     private void purgeOverload(Entity[] entities) {
         for (Entity e : entities) {
             if (e instanceof Player) continue;
-            if (settings.isIgnored(e.getType())) continue;
-            if (settings.shouldPurgeProjectileType(e.getType())) e.remove();
+            EntityType t = e.getType();
+            if (settings.isIgnored(t)) continue;
+            if (settings.shouldPurgeProjectileType(t)) e.remove();
         }
     }
-    private void updateBroadcast(World world, int cx, int cz, Key k, boolean frozen, int count, FrozenChunkManager.FreezeCause cause) {
-        if (!settings.broadcast || (frozen && cause == FrozenChunkManager.FreezeCause.REDSTONE)) return;
-        Boolean prev = msgState.get(k);
-        if (prev == null) { msgState.put(k, frozen); if (frozen) broadcast(world, cx, cz, count, cause); return; }
-        if (prev == frozen) return;
+    private void maybeBroadcast(World world, int cx, int cz, Key k, int count) {
+        if (!settings.broadcast) return;
         long now = System.currentTimeMillis();
-        Long last = lastMsgMs.get(k);
-        if (last != null && now - last < 1000L) { msgState.put(k, frozen); return; }
-        lastMsgMs.put(k, now); msgState.put(k, frozen);
-        if (frozen) broadcast(world, cx, cz, count, cause);
-    }
-    private void broadcast(World world, int cx, int cz, int count, FrozenChunkManager.FreezeCause cause) {
-        Component msg = lang.broadcastBase(world, cx, cz);
-        if (cause == FrozenChunkManager.FreezeCause.ENTITY) {
-            msg = msg.append(lang.component("messages.broadcast-entity-suffix", "&c (entity=%count%)", "count", count));
-        }
-        final Component finalMsg = msg;
+        Long last = lastBroadcastMs.put(k, now);
+        if (last != null && now - last < BROADCAST_COOLDOWN_MS) return; // freeze/unfreeze flapping
+        Component msg = lang.broadcastBase(world, cx, cz).append(lang.component("messages.broadcast-entity-suffix", "&c (entity=%count%)", "count", count));
         Bukkit.getGlobalRegionScheduler().execute(plugin, () -> {
-            Bukkit.getConsoleSender().sendMessage(finalMsg);
+            Bukkit.getConsoleSender().sendMessage(msg);
             for (Player pl : Bukkit.getOnlinePlayers()) {
-                if (pl.hasPermission("chunkfreezer.notify")) pl.sendMessage(finalMsg);
+                if (pl.hasPermission("chunkfreezer.notify")) pl.sendMessage(msg);
             }
         });
     }
     public void shutdown() {
+        active = false;
         monitors.values().forEach(t -> { try { t.cancel(); } catch (Throwable ignored) {} });
-        monitors.clear(); msgState.clear(); lastMsgMs.clear();
-        coverage.clear(); interest.clear(); refreshedAt.clear();
+        monitors.clear(); lastBroadcastMs.clear();
+        coverage.clear(); interest.clear(); refreshedAt.clear(); refreshPending.clear();
         projectileStuckSinceMs.clear();
         fastCheckScheduled.clear();
         freezeGraceUntilMs.clear();

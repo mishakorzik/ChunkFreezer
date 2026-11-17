@@ -55,6 +55,9 @@ commands:
 
     invalid-coordinates: "&cInvalid coordinates."
 
+    # Shown if the target chunk could not be loaded for the teleport.
+    failed: "&cCould not load that chunk."
+
   despawn:
     not-ready: "&cChunkFreezer isn't fully loaded yet, try again in a moment."
 

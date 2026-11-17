@@ -52,9 +52,21 @@ public final class EntityTypeResolver {
         Class<? extends Entity> clazz = t.getEntityClass();
         return clazz != null && marker.isAssignableFrom(clazz);
     }
-    private static EntityType byEntityTypeName(String name) {
-        try { return EntityType.valueOf(name); } catch (IllegalArgumentException notAnEntityName) { return null; }
+    /** EntityType lookup by enum name without exceptions. This resolver runs on every player
+     *  interaction with an item while any chunk is frozen, and almost every Material name is NOT
+     *  an EntityType name - EntityType.valueOf() would throw (and fill in a stack trace) for each
+     *  of those, which is far too expensive on a hot path. */
+    private static final Map<String, EntityType> TYPES_BY_NAME = buildTypeIndex();
+    private static Map<String, EntityType> buildTypeIndex() {
+        Map<String, EntityType> m = new java.util.HashMap<>();
+        for (EntityType t : EntityType.values()) m.put(t.name(), t);
+        return Map.copyOf(m);
     }
+    private static EntityType byEntityTypeName(String name) {
+        return TYPES_BY_NAME.get(name);
+    }
+    /** Per-material memo of resolvePlaceable(): the answer never changes at runtime. */
+    private static final java.util.concurrent.ConcurrentHashMap<Material, java.util.Optional<EntityType>> PLACEABLE_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
     /** Item-name suffix shared by every bucket item. */
     private static final String BUCKET_SUFFIX = "_BUCKET";
     /** Buckets whose contents are a liquid/powder the player empties into the world (water, lava,
@@ -103,6 +115,9 @@ public final class EntityTypeResolver {
      *  as one of these categories at all. */
     public static EntityType resolvePlaceable(Material m) {
         if (m == null) return null;
+        return PLACEABLE_CACHE.computeIfAbsent(m, k -> java.util.Optional.ofNullable(computePlaceable(k))).orElse(null);
+    }
+    private static EntityType computePlaceable(Material m) {
         EntityType direct = byEntityTypeName(m.name());
         if (direct != null && (isKind(direct, Vehicle.class) || isKind(direct, Hanging.class))) return direct;
         if (isMobBucket(m)) {
@@ -130,16 +145,23 @@ public final class EntityTypeResolver {
      *  Returns null for anything not recognized at all. */
     public static EntityType resolveWithMeta(ItemStack stack) {
         Material m = stack.getType();
-        if (isSpawnEgg(m) && stack.getItemMeta() instanceof SpawnEggMeta meta) {
-            try {
-                EntityType t = meta.getSpawnedType();
-                if (t != null) return t;
-            } catch (UnsupportedOperationException ignored) {
-                /** Defensive fallback only - isSpawnEgg() above should already prevent this in
-                 *  practice. Falls through to resolvePlaceable below, which returns null for a
-                 *  spawn-egg material anyway (it isn't a boat/minecart/bucket/decoration). */
+        if (isSpawnEgg(m)) {
+            /** An egg carrying custom entity data (e.g. from /give with components) spawns
+             *  whatever that data says - prefer it. Otherwise the material decides, and every
+             *  vanilla egg is named <ENTITY>_SPAWN_EGG. (SpawnEggMeta#getSpawnedType() is
+             *  deprecated for removal and no longer reliable, so it isn't used.) */
+            if (stack.hasItemMeta() && stack.getItemMeta() instanceof SpawnEggMeta meta) {
+                try {
+                    org.bukkit.entity.EntitySnapshot snapshot = meta.getSpawnedEntity();
+                    if (snapshot != null && snapshot.getEntityType() != null) return snapshot.getEntityType();
+                } catch (RuntimeException ignored) {
+                    // fall back to the material name below
+                }
             }
+            String n = m.name();
+            return byEntityTypeName(n.substring(0, n.length() - SPAWN_EGG_SUFFIX.length()));
         }
         return resolvePlaceable(m);
     }
+    private static final String SPAWN_EGG_SUFFIX = "_SPAWN_EGG";
 }

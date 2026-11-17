@@ -1,5 +1,5 @@
 name: ChunkFreezer
-version: '1.0.3'
+version: '1.0.4'
 main: com.heonezen.chunkfreezer.ChunkFreezerPlugin
 api-version: '1.21'
 folia-supported: true
@@ -15,7 +15,10 @@ permissions:
     description: Bypasses all frozen chunk barriers (no command access)
     default: false
   chunkfreezer.notify:
-    description: Receive ChunkFreezer broadcast messages (chunk frozen/unfrozen alerts)
+    description: Receive ChunkFreezer broadcast messages (chunk frozen alerts)
+    default: op
+  chunkfreezer.regionborder:
+    description: See the Folia region border particles (when region-border-particles.only-with-permission is true)
     default: op
 commands:
   chunk:

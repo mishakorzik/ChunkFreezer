@@ -79,7 +79,7 @@ public final class ChunkCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(prefixedMsg("commands.not-ready", "&cChunkFreezer isn't fully loaded yet, try again in a moment."));
             return true;
         }
-        switch (args[0].toLowerCase()) {
+        switch (args[0].toLowerCase(Locale.ROOT)) {
             case "list" -> handleList(sender);
             case "reload" -> handleReload(sender);
             case "go" -> handleGo(sender, args);
@@ -117,13 +117,41 @@ public final class ChunkCommand implements CommandExecutor, TabCompleter {
         int[] xz = parseXZ(sender, "go", args);
         if (xz == null) return;
         final int fx = xz[0], fz = xz[1];
+        final int cx = fx >> 4, cz = fz >> 4;
         final float yaw = p.getLocation().getYaw();
-        final BarrierListener bl = barrierListener;
-        world.getChunkAtAsync(fx >> 4, fz >> 4).thenAccept(chunk -> {
-            int sy = world.getHighestBlockYAt(fx, fz);
-            if (bl != null) bl.allowNextTeleport(p.getUniqueId());
-            p.teleportAsync(new org.bukkit.Location(world, fx + 0.5, sy + 1.0, fz + 0.5, yaw, 0f));
+        /** Load the chunk, compute a safe Y on the thread that owns the target chunk (on Folia
+         *  only that thread may read its blocks), then teleport from the player's own thread. */
+        world.getChunkAtAsync(cx, cz).whenComplete((chunk, err) -> {
+            if (err != null || chunk == null) {
+                p.sendMessage(prefixedMsg("commands.go.failed", "&cCould not load that chunk."));
+                return;
+            }
+            Bukkit.getRegionScheduler().execute(plugin, world, cx, cz, () -> {
+                double y = safeTeleportY(world, fx, fz);
+                org.bukkit.Location dest = new org.bukkit.Location(world, fx + 0.5, y, fz + 0.5, yaw, 0f);
+                p.getScheduler().execute(plugin, () -> {
+                    final BarrierListener bl = barrierListener;
+                    if (bl != null) bl.allowNextTeleport(p.getUniqueId());
+                    p.teleportAsync(dest).whenComplete((ok, tpErr) -> {
+                        if (bl != null) bl.revokeTeleportExemption(p.getUniqueId());
+                    });
+                }, null, 1L);
+            });
         });
+    }
+    /** Standing height at (x, z). In worlds with a ceiling (the Nether) the highest block is the
+     *  bedrock roof, so there the column is searched top-down for a floor with two free blocks
+     *  above it instead of putting the admin on the roof. */
+    private static double safeTeleportY(World world, int x, int z) {
+        if (world.hasCeiling()) {
+            int top = Math.min(world.getMaxHeight() - 2, world.getLogicalHeight() + world.getMinHeight() - 2);
+            for (int y = top; y > world.getMinHeight(); y--) {
+                if (world.getBlockAt(x, y - 1, z).getType().isSolid()
+                        && world.getBlockAt(x, y, z).isPassable()
+                        && world.getBlockAt(x, y + 1, z).isPassable()) return y;
+            }
+        }
+        return world.getHighestBlockYAt(x, z) + 1.0;
     }
     private void handleDespawn(CommandSender sender, String[] args) {
         World world = parseWorld(sender, "despawn", args);
@@ -134,6 +162,12 @@ public final class ChunkCommand implements CommandExecutor, TabCompleter {
         final ChunkMonitor cm = chunkMonitor;
         if (cm == null) {
             sender.sendMessage(prefixedMsg("commands.despawn.not-ready", "&cChunkFreezer isn't fully loaded yet, try again in a moment."));
+            return;
+        }
+        /** Checked up front: on Folia a region task for an unloaded chunk may not run until (or
+         *  unless) the chunk is loaded again, so the command would otherwise never answer. */
+        if (!world.isChunkLoaded(cx, cz)) {
+            sender.sendMessage(prefixedMsg("commands.despawn.chunk-not-loaded", "&cChunk %x%, %z% in %world% isn't loaded.", "x", cx, "z", cz, "world", world.getName()));
             return;
         }
         Bukkit.getRegionScheduler().execute(plugin, world, cx, cz, () -> {
@@ -186,7 +220,8 @@ public final class ChunkCommand implements CommandExecutor, TabCompleter {
         if (!sender.isOp() && !sender.hasPermission("chunkfreezer.admin")) return Collections.emptyList();
         if (args.length == 1) return filterStartsWith(Arrays.asList("list", "reload", "go", "despawn"), args[0]);
         boolean isCoordCommand = args[0].equalsIgnoreCase("go") || args[0].equalsIgnoreCase("despawn");
-        if (args.length >= 2 && isCoordCommand) {
+        FrozenChunkManager manager = this.manager;
+        if (args.length >= 2 && isCoordCommand && manager != null) {
             if (args.length == 2) {
                 List<String> worlds = new ArrayList<>();
                 for (World w : Bukkit.getWorlds()) worlds.add(w.getName());
@@ -218,9 +253,9 @@ public final class ChunkCommand implements CommandExecutor, TabCompleter {
     }
     private List<String> filterStartsWith(List<String> options, String prefix) {
         if (prefix.isEmpty()) return options;
-        String lower = prefix.toLowerCase();
+        String lower = prefix.toLowerCase(Locale.ROOT);
         List<String> result = new ArrayList<>();
-        for (String o : options) if (o.toLowerCase().startsWith(lower)) result.add(o);
+        for (String o : options) if (o.toLowerCase(Locale.ROOT).startsWith(lower)) result.add(o);
         return result;
     }
 }

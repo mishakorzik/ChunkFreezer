@@ -1,7 +1,8 @@
 # Every message the plugin sends (including the /chunk help menu and its own prefix) lives in
 # language.yml instead of here - edit that file to translate or restyle any text.
 
-# Broadcast a chat message to everyone when a chunk freezes/unfreezes.
+# Broadcast a chat message (console + players with chunkfreezer.notify)
+# when a chunk freezes.
 broadcast: true
 
 
@@ -182,11 +183,17 @@ redstone-protection:
 
 
 # REGION BORDER PARTICLES
-# Folia/CanvasMC only - ignored on regular Paper/Spigot. Shows a blue
-# particle wall where a player is about to cross from the region ticking
-# them into a different one. Purely visual, never blocks anything. Regions
-# resize live as players move, so this is recalculated on the fly rather
-# than precomputed.
+# Folia/CanvasMC only - ignored on regular Paper/Spigot. Folia builds every
+# region out of whole "region sections" (squares of 2^grid-exponent chunks,
+# 16x16 chunks = 256x256 blocks by default), so region borders, splits and
+# merges can only ever happen along those section lines. This shows a
+# particle wall on a section line when a player gets close to it:
+#   blue   - the section across the line is ticked by the same region
+#            as the player (the normal case),
+#   orange - the section across the line is NOT owned by the player's
+#            region (a real region edge).
+# The grid size is read from the running server, so a custom
+# grid-exponent is honoured. Purely visual, never blocks anything.
 region-border-particles:
 
   # Set to false to disable this entirely.
@@ -194,6 +201,10 @@ region-border-particles:
 
   # How close (blocks) before the wall appears. Clamped 2-16.
   distance: 4
+
+  # true = only players with the chunkfreezer.regionborder permission
+  # (default: op) see the walls. false = every player sees them.
+  only-with-permission: true
 
 
 # BARRIER

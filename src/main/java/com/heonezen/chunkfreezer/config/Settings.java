@@ -65,6 +65,7 @@ public final class Settings {
 
     public final boolean regionBorderParticlesEnabled;
     public final double  regionBorderParticleDistance;
+    public final boolean regionBorderRequirePermission;
 
     public Settings(FileConfiguration cfg, File configFile) {
         this(cfg, configFile, null);
@@ -134,10 +135,11 @@ public final class Settings {
         List<String> rawExtraItems = readOwnStringList(configFile, "advanced.extra-entity-placing-items");
         List<String> rawBlockedCauses = readOwnStringList(configFile, "advanced.blocked-teleport-causes");
         this.extraEntityPlacingItems = parseMaterials(rawExtraItems, logger);
-        this.blockedTeleportCauses = parseTeleportCauses(rawBlockedCauses);
+        this.blockedTeleportCauses = parseTeleportCauses(rawBlockedCauses, logger);
 
-        this.regionBorderParticlesEnabled = cfg.getBoolean("region-border-particles.enabled", true);
-        this.regionBorderParticleDistance = clamp(cfg.getDouble("region-border-particles.distance", 4.0), 2.0, 16.0);
+        this.regionBorderParticlesEnabled  = cfg.getBoolean("region-border-particles.enabled", true);
+        this.regionBorderParticleDistance  = clamp(cfg.getDouble("region-border-particles.distance", 4.0), 2.0, 16.0);
+        this.regionBorderRequirePermission = cfg.getBoolean("region-border-particles.only-with-permission", true);
     }
     /** Reads a string list straight from the config file on disk, with no default-configuration
      *  layer attached, so a missing key resolves to an empty list instead of falling back to the
@@ -168,6 +170,15 @@ public final class Settings {
      *  still count the just-removed ones, since remove() doesn't shrink a previously-fetched array,
      *  it only flips the removed entity's own isDead()/isValid() state. */
     public int countNonIgnoredEntities(org.bukkit.entity.Entity[] entities) {
+        int c = 0;
+        for (org.bukkit.entity.Entity e : entities) {
+            if (e == null || e.isDead() || !e.isValid()) continue;
+            if (e instanceof org.bukkit.entity.Player) continue;
+            if (!isIgnored(e.getType())) c++;
+        }
+        return c;
+    }
+    public int countNonIgnoredEntities(Collection<? extends org.bukkit.entity.Entity> entities) {
         int c = 0;
         for (org.bukkit.entity.Entity e : entities) {
             if (e == null || e.isDead() || !e.isValid()) continue;
@@ -214,14 +225,16 @@ public final class Settings {
         logger.warning("Ignoring unknown " + kind + " name(s) in config.yml: " + String.join(", ", unknown) + " - check for typos, an unknown name silently disables that entry.");
     }
     @SuppressWarnings("deprecation")
-    private static Set<PlayerTeleportEvent.TeleportCause> parseTeleportCauses(List<String> raw) {
+    private static Set<PlayerTeleportEvent.TeleportCause> parseTeleportCauses(List<String> raw, java.util.logging.Logger logger) {
         if (raw == null || raw.isEmpty()) return Collections.emptySet();
         EnumSet<PlayerTeleportEvent.TeleportCause> set = EnumSet.noneOf(PlayerTeleportEvent.TeleportCause.class);
+        List<String> unknown = new ArrayList<>();
         for (String s : raw) {
             if (s == null || s.isBlank()) continue;
             try { set.add(PlayerTeleportEvent.TeleportCause.valueOf(s.trim().toUpperCase(Locale.ROOT))); }
-            catch (IllegalArgumentException ignored) {}
+            catch (IllegalArgumentException ignored) { unknown.add(s.trim()); }
         }
+        warnUnknown(logger, "teleport cause", unknown);
         return Collections.unmodifiableSet(set);
     }
     private static double clamp(double v, double lo, double hi) { return Math.max(lo, Math.min(hi, v)); }

@@ -13,14 +13,20 @@ import com.heonezen.chunkfreezer.monitor.ChunkMonitor;
 import com.heonezen.chunkfreezer.redstone.RedstoneLoopProtector;
 import org.bukkit.Bukkit;
 import org.bukkit.command.PluginCommand;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.event.HandlerList;
+import org.bukkit.plugin.PluginManager;
 import org.bukkit.plugin.ServicePriority;
 import org.bukkit.plugin.java.JavaPlugin;
+
+import java.io.File;
 
 public final class ChunkFreezerPlugin extends JavaPlugin {
 
     private Settings settings;
     private Lang lang;
+    /** Created once and kept across /chunk reload, so chunks that are frozen right now stay
+     *  frozen through a reload instead of every crash machine being released at once. */
     private FrozenChunkManager manager;
     private ChunkMonitor chunkMonitor;
     private BarrierListener barrierListener;
@@ -34,75 +40,79 @@ public final class ChunkFreezerPlugin extends JavaPlugin {
         chunkCommand = new ChunkCommand(this, null);
         registerCommand();
         apiImpl = new ChunkFreezerAPIImpl();
-        Bukkit.getServicesManager().register(ChunkFreezerAPI.class, apiImpl, this, ServicePriority.Normal);
         initComponents();
+        Bukkit.getServicesManager().register(ChunkFreezerAPI.class, apiImpl, this, ServicePriority.Normal);
     }
     private void initComponents() {
-        settings = new Settings(getConfig(), new java.io.File(getDataFolder(), "config.yml"), getLogger());
+        settings = new Settings(getConfig(), new File(getDataFolder(), "config.yml"), getLogger());
         lang = loadLang();
-        manager  = new FrozenChunkManager(this, settings);
-        if (chunkCommand != null) { chunkCommand.setManager(manager); chunkCommand.setLang(lang); }
+        if (manager == null) manager = new FrozenChunkManager(this, settings);
+        else manager.updateSettings(settings);
+        // A protection that was switched off by the reload would never release its chunks again.
+        if (!settings.entitiesProtectionEnabled) manager.releaseCause(FrozenChunkManager.FreezeCause.ENTITY);
+        if (!settings.redstoneProtectionEnabled) {
+            manager.releaseCause(FrozenChunkManager.FreezeCause.REDSTONE);
+            manager.clearRedstoneMutes();
+        }
+        chunkCommand.setManager(manager);
+        chunkCommand.setLang(lang);
         apiImpl.update(manager, settings);
-        Bukkit.getPluginManager().registerEvents(new ProtectionListener(this, settings, manager, lang), this);
+
+        PluginManager pm = Bukkit.getPluginManager();
+        pm.registerEvents(new ProtectionListener(this, settings, manager, lang), this);
+
         barrierListener = new BarrierListener(this, settings, manager, lang);
-        Bukkit.getPluginManager().registerEvents(barrierListener, this);
+        pm.registerEvents(barrierListener, this);
+        manager.setFrozenSetListener(barrierListener::syncLivingMoveListener);
+        barrierListener.syncLivingMoveListener();
         barrierListener.startParticleTasks();
-        if (chunkCommand != null) chunkCommand.setBarrierListener(barrierListener);
+        chunkCommand.setBarrierListener(barrierListener);
         apiImpl.setBarrierListener(barrierListener);
+
         if (settings.redstoneProtectionEnabled)
-            Bukkit.getPluginManager().registerEvents(new RedstoneLoopProtector(this, settings, manager, lang), this);
+            pm.registerEvents(new RedstoneLoopProtector(this, settings, manager, lang), this);
+
         regionBorderListener = new RegionBorderListener(this, settings);
-        Bukkit.getPluginManager().registerEvents(regionBorderListener, this);
+        pm.registerEvents(regionBorderListener, this);
         regionBorderListener.startTasks();
-        /** Always created: /chunk despawn (manual instant-despawn) works regardless of whether
-         *  automatic entities-protection monitoring is enabled. entities-protection.enabled still
-         *  fully controls the automatic freeze-on-overload scanning inside ChunkMonitor itself. */
+
+        /** Always created: /chunk despawn works regardless of whether automatic monitoring is
+         *  enabled; entities-protection.enabled still controls the automatic freezing inside it. */
         chunkMonitor = new ChunkMonitor(this, settings, manager, lang);
-        Bukkit.getPluginManager().registerEvents(chunkMonitor, this);
+        pm.registerEvents(chunkMonitor, this);
         chunkMonitor.runStartupScan();
-        if (chunkCommand != null) chunkCommand.setChunkMonitor(chunkMonitor);
+        chunkCommand.setChunkMonitor(chunkMonitor);
     }
-    /** Loads language.yml fresh from disk (writing the bundled default first if it's missing),
-     *  exactly like config.yml's own load/reload lifecycle - so editing either file and running
-     *  /chunk reload always picks up the latest content, never a cached copy. */
+    /** Loads language.yml fresh from disk (writing the bundled default first if it's missing). */
     private Lang loadLang() {
-        java.io.File langFile = new java.io.File(getDataFolder(), "language.yml");
+        File langFile = new File(getDataFolder(), "language.yml");
         if (!langFile.exists()) saveResource("language.yml", false);
-        return new Lang(org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(langFile));
+        return new Lang(YamlConfiguration.loadConfiguration(langFile));
     }
     private void registerCommand() {
         PluginCommand cmd = getCommand("chunk");
         if (cmd != null) { cmd.setExecutor(chunkCommand); cmd.setTabCompleter(chunkCommand); }
     }
-    public void reloadPlugin() {
-        if (chunkMonitor != null) {
-           chunkMonitor.shutdown();
-           chunkMonitor = null; 
-        }
-        if (barrierListener != null) {
-           barrierListener.shutdown();
-           barrierListener = null;
-        }
-        if (regionBorderListener != null) {
-           regionBorderListener.shutdown();
-           regionBorderListener = null;
-        }
+    private void teardownComponents() {
+        if (manager != null) manager.setFrozenSetListener(null);
+        if (chunkMonitor != null) { chunkMonitor.shutdown(); chunkMonitor = null; }
+        if (barrierListener != null) { barrierListener.shutdown(); barrierListener = null; }
+        if (regionBorderListener != null) { regionBorderListener.shutdown(); regionBorderListener = null; }
         if (apiImpl != null) apiImpl.setBarrierListener(null);
-        if (manager != null) {
-            manager.shutdown();
-            manager = null;
-        }
+        if (chunkCommand != null) { chunkCommand.setBarrierListener(null); chunkCommand.setChunkMonitor(null); }
+    }
+    /** /chunk reload. Synchronized: two admins reloading at the same moment (on Folia from two
+     *  different region threads) must not interleave teardown and init. */
+    public synchronized void reloadPlugin() {
+        teardownComponents();
         HandlerList.unregisterAll(this);
-        registerCommand();
         reloadConfig();
         initComponents();
     }
     @Override
-    public void onDisable() {
-        if (chunkMonitor != null) chunkMonitor.shutdown();
-        if (barrierListener != null) barrierListener.shutdown();
-        if (regionBorderListener != null) regionBorderListener.shutdown();
-        if (manager != null) manager.shutdown();
+    public synchronized void onDisable() {
+        teardownComponents();
+        if (manager != null) { manager.shutdown(); manager = null; }
         Bukkit.getServicesManager().unregisterAll(this);
     }
 }

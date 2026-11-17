@@ -53,7 +53,11 @@ public final class RedstoneLoopProtector implements Listener {
         if (now < st.ignoreUntilMs) return;
         long win = windowIndex(now);
         if (st.windowIdx != win) {
-            st.consecutiveOver = (st.eventsInWindow >= settings.redstoneMaxEventsPerWindow && st.distinctInWindow >= settings.redstoneMinDistinctBlocks) ? st.consecutiveOver + 1 : 0;
+            boolean lastWindowOver = st.eventsInWindow >= settings.redstoneMaxEventsPerWindow && st.distinctInWindow >= settings.redstoneMinDistinctBlocks;
+            /** Only an immediately following window continues the streak: after a quiet gap
+             *  (no events at all for one or more windows) the old count must not carry over,
+             *  otherwise two separate bursts minutes apart counted as "consecutive". */
+            st.consecutiveOver = (lastWindowOver && win == st.windowIdx + 1) ? st.consecutiveOver + 1 : 0;
             st.windowIdx = win; st.eventsInWindow = 0; st.distinctInWindow = 0; st.positions = null;
         }
         st.eventsInWindow++;
@@ -93,15 +97,31 @@ public final class RedstoneLoopProtector implements Listener {
                     }
                 });
             }
-            Bukkit.getRegionScheduler().runDelayed(plugin, world, cx, cz, (ScheduledTask _st) -> attemptUnfreeze(world, cx, cz), Math.max(20L, settings.redstoneFreezeSeconds * 20L));
+            scheduleUnfreeze(world, cx, cz, Math.max(20L, settings.redstoneFreezeSeconds * 20L), 0);
         });
     }
-    private void attemptUnfreeze(World world, int cx, int cz) {
-        if (!world.isChunkLoaded(cx, cz)) return;
+    private void scheduleUnfreeze(World world, int cx, int cz, long delayTicks, int attempt) {
+        Bukkit.getRegionScheduler().runDelayed(plugin, world, cx, cz, (ScheduledTask _st) -> attemptUnfreeze(world, cx, cz, attempt), Math.max(1L, delayTicks));
+    }
+    /** Releases a redstone-frozen chunk once its unfreeze lock is over. If the lock is still
+     *  running (tick lag / clock jitter can make this fire a moment early, and a re-trigger
+     *  extends the lock), it re-schedules itself instead of giving up - previously one early
+     *  attempt left the chunk frozen forever whenever nothing else (ChunkMonitor) re-checked it,
+     *  e.g. with entities-protection disabled or no player nearby. */
+    private void attemptUnfreeze(World world, int cx, int cz, int attempt) {
+        if (!world.isChunkLoaded(cx, cz) || !manager.isFrozen(world, cx, cz)) return;
+        long lockLeftMs = manager.unfreezeLockRemainingMs(world, cx, cz);
+        if (lockLeftMs > 0) {
+            if (attempt < 64) scheduleUnfreeze(world, cx, cz, lockLeftMs / 50L + 1L, attempt + 1);
+            return;
+        }
         Chunk chunk = world.getChunkAt(cx, cz);
-        if (!manager.isFrozen(world, cx, cz) || manager.isUnfreezeLocked(world, cx, cz)) return;
-        if (settings.countNonIgnoredEntities(chunk.getEntities()) <= settings.unfreezeThreshold)
-            manager.unfreezeChunk(chunk);
+        /** With entities-protection on, a chunk that is still overloaded stays frozen and
+         *  ChunkMonitor releases it once the entity count drops. With it off, the entity count is
+         *  irrelevant - nothing would ever release the chunk otherwise. */
+        if (settings.entitiesProtectionEnabled
+                && settings.countNonIgnoredEntities(chunk.getEntities()) > settings.unfreezeThreshold) return;
+        manager.unfreezeChunk(chunk);
     }
     private long windowIndex(long nowMs) {
         return nowMs / Math.max(50L, settings.redstoneWindowTicks * 50L);

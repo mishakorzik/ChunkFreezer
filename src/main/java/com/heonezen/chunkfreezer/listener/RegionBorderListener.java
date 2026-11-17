@@ -1,6 +1,9 @@
 package com.heonezen.chunkfreezer.listener;
 
 import com.heonezen.chunkfreezer.config.Settings;
+import com.heonezen.chunkfreezer.util.FoliaSupport;
+import com.heonezen.chunkfreezer.util.ParticleWalls;
+import com.heonezen.chunkfreezer.util.PlayerTasks;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.Bukkit;
 import org.bukkit.Color;
@@ -9,128 +12,133 @@ import org.bukkit.Particle;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.plugin.Plugin;
 
-import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
 
-/** Purely informational, region-threaded-server-only feature: shows a blue particle wall to a
- *  player when they're near the boundary between the region currently ticking them and a
- *  neighboring one, so they (and anyone watching) can see where one region hands off to another.
+/** Purely informational, Folia-only feature: shows a particle wall where the region grid runs
+ *  near a player.
  *
- *  <p>Crossing the line is completely normal and is never blocked - unlike a frozen chunk's
- *  border, nothing about this restricts movement in any way, and there's no cost to walking back
- *  and forth across it. Regions merge and split dynamically as players spread out or cluster
- *  together, so unlike frozen chunks (which have a fixed, precomputed border), a region's border
- *  has to be recomputed live: this only knows "is the region ticking me right now the same one
- *  that owns the chunk next door", checked fresh a few times a second.
+ *  <h2>Why it used to show nothing at all</h2>
+ *  The old implementation only drew a wall when a chunk directly next to the player's chunk was
+ *  owned by a different region. Folia's regionizer guarantees that can never happen: every chunk
+ *  position within the merge radius of a loaded chunk is owned by that chunk's region, and a
+ *  player is always surrounded by their own loaded (view-distance) chunks. So the neighbouring
+ *  chunks were always "ours" and the check was false forever.
  *
- *  <p>Every method here relies on Folia's (or a Folia fork's, e.g. CanvasMC's) region-scheduler
- *  API, exactly like the rest of this plugin already does - there's no separate "are we on
- *  Folia?" check because the whole plugin already requires it to load at all. */
+ *  <h2>What it shows now</h2>
+ *  Folia builds every region out of whole region <i>sections</i> - squares of 2^grid-exponent
+ *  chunks (16x16 chunks = 256x256 blocks by default). Region borders, splits and merges can
+ *  only ever happen along those section lines, so they are exactly the lines worth seeing:
+ *  <ul>
+ *    <li><b>blue</b> - a section line; the section across it is still ticked by the same
+ *        region as the player (the normal case);</li>
+ *    <li><b>orange</b> - the section across the line is NOT owned by the player's region (a real
+ *        region edge, e.g. right after a teleport, before the regions merge).</li>
+ *  </ul>
+ *  The grid size is read from the running server, so a custom grid-exponent is honoured. On
+ *  plain Paper/Spigot (no regions) this listener does nothing. */
 public final class RegionBorderListener implements Listener {
 
-    private final Plugin  plugin;
+    public static final String PERMISSION = "chunkfreezer.regionborder";
+
+    private static final Particle.DustOptions SECTION_DUST = new Particle.DustOptions(Color.fromRGB(60, 140, 255), 0.85f);
+    private static final Particle.DustOptions EDGE_DUST    = new Particle.DustOptions(Color.fromRGB(255, 165, 40), 0.85f);
+
+    private final Plugin plugin;
     private final Settings settings;
-    private final Map<UUID, ScheduledTask> tasks = new ConcurrentHashMap<>();
-    private static final Particle.DustOptions REGION_DUST = new Particle.DustOptions(Color.fromRGB(60, 140, 255), 0.85f);
+    private final boolean folia;
+    /** Region section edge length in blocks (16 << grid-exponent). */
+    private final double sectionBlocks;
+    private final PlayerTasks tasks;
+    private final AtomicBoolean loggedError = new AtomicBoolean(false);
+    private volatile boolean active = true;
+
     public RegionBorderListener(Plugin plugin, Settings settings) {
         this.plugin = plugin;
         this.settings = settings;
+        this.folia = FoliaSupport.isFolia();
+        int shift = FoliaSupport.regionSectionChunkShift();
+        this.sectionBlocks = (double) (16L << shift);
+        this.tasks = new PlayerTasks(plugin, this::enabled, 5L, 6L, this::tick);
     }
+
+    private boolean enabled() {
+        return active && folia && settings.regionBorderParticlesEnabled;
+    }
+
     public void startTasks() {
-        if (!settings.regionBorderParticlesEnabled) return;
-        for (Player p : Bukkit.getOnlinePlayers()) startTask(p);
-    }
-    @EventHandler
-    public void onJoin(PlayerJoinEvent e) {
-        if (settings.regionBorderParticlesEnabled) startTask(e.getPlayer());
-    }
-    @EventHandler
-    public void onRespawn(PlayerRespawnEvent e) {
-        if (!settings.regionBorderParticlesEnabled) return;
-        UUID id = e.getPlayer().getUniqueId();
-        ScheduledTask old = tasks.remove(id);
-        if (old != null) try { old.cancel(); } catch (Throwable ignored) {}
-        Bukkit.getGlobalRegionScheduler().runDelayed(plugin, task -> startTask(e.getPlayer()), 2L);
-    }
-    @EventHandler
-    public void onQuit(PlayerQuitEvent e) {
-        ScheduledTask t = tasks.remove(e.getPlayer().getUniqueId());
-        if (t != null) try { t.cancel(); } catch (Throwable ignored) {}
-    }
-    private void startTask(Player p) { startTask(p, 0); }
-    private void startTask(Player p, int attempt) {
-        if (!settings.regionBorderParticlesEnabled || !p.isOnline()) return;
-        UUID id = p.getUniqueId();
-        if (tasks.containsKey(id)) return;
-        ScheduledTask t = p.getScheduler().runAtFixedRate(plugin, st -> tick(p, st), () -> tasks.remove(id), 5L, 6L);
-        if (t != null) { tasks.put(id, t); return; }
-        if (attempt < 10) {
-            Bukkit.getGlobalRegionScheduler().runDelayed(plugin, task -> startTask(p, attempt + 1), 4L);
+        if (settings.regionBorderParticlesEnabled && !folia) {
+            plugin.getLogger().info("region-border-particles: not a Folia server, nothing to show (regions only exist on Folia).");
+            return;
         }
+        if (!enabled()) return;
+        plugin.getLogger().info("region-border-particles: region section size is " + (long) sectionBlocks + " blocks.");
+        for (Player p : Bukkit.getOnlinePlayers()) tasks.start(p);
     }
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onJoin(PlayerJoinEvent e) {
+        if (enabled()) tasks.start(e.getPlayer());
+    }
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onRespawn(PlayerRespawnEvent e) {
+        if (enabled()) tasks.restart(e.getPlayer());
+    }
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onQuit(PlayerQuitEvent e) {
+        tasks.stop(e.getPlayer().getUniqueId());
+    }
+
     private void tick(Player p, ScheduledTask st) {
         try {
             tick0(p, st);
         } catch (Throwable t) {
-            /** Defensive: this runs 10x/second per online player. An uncaught exception here would
-             *  otherwise repeat every cycle and flood the console - log it at most once so admins
-             *  can still see and report it, then quietly stop drawing for the rest of this session
-             *  rather than spamming forever. Doesn't touch anything else the plugin does. */
+            /** Cosmetic feature running several times a second per player: log once, then stop
+             *  drawing for this player instead of flooding the console. */
             if (loggedError.compareAndSet(false, true)) {
-                plugin.getLogger().log(java.util.logging.Level.WARNING, "region-border-particles: unexpected error, disabling for this session", t);
+                plugin.getLogger().log(Level.WARNING, "region-border-particles: unexpected error, disabling it for this player", t);
             }
-            st.cancel();
+            tasks.finish(p.getUniqueId(), st);
         }
     }
-    private final java.util.concurrent.atomic.AtomicBoolean loggedError = new java.util.concurrent.atomic.AtomicBoolean(false);
+
     private void tick0(Player p, ScheduledTask st) {
-        if (!p.isOnline() || !p.isValid()) { st.cancel(); return; }
-        if (!settings.regionBorderParticlesEnabled) return;
+        if (!p.isOnline()) { tasks.finish(p.getUniqueId(), st); return; }
+        if (!enabled() || !p.isValid()) return;
+        if (settings.regionBorderRequirePermission && !p.hasPermission(PERMISSION)) return;
         Location loc = p.getLocation();
         World w = loc.getWorld();
         if (w == null) return;
-        /** This task runs on the region that owns the player (it was scheduled through the
-         *  player's own EntityScheduler), so checking neighboring chunks below tells us whether
-         *  THAT SAME region also owns them, or whether they belong to a different one. */
-        int pcx = loc.getBlockX() >> 4, pcz = loc.getBlockZ() >> 4;
-        double px = loc.getX(), pz = loc.getZ(), py = loc.getY();
+        double px = loc.getX(), py = loc.getY(), pz = loc.getZ();
         double d = settings.regionBorderParticleDistance;
-        boolean eastForeign  = !Bukkit.isOwnedByCurrentRegion(w, pcx + 1, pcz);
-        boolean westForeign  = !Bukkit.isOwnedByCurrentRegion(w, pcx - 1, pcz);
-        boolean southForeign = !Bukkit.isOwnedByCurrentRegion(w, pcx, pcz + 1);
-        boolean northForeign = !Bukkit.isOwnedByCurrentRegion(w, pcx, pcz - 1);
-        if (!eastForeign && !westForeign && !southForeign && !northForeign) return;
-        double x0 = pcx << 4, z0 = pcz << 4;
-        if (eastForeign && Math.abs(px - (x0 + 16.0)) <= d)
-            drawWallFixedX(p, x0 + 16.0, z0, z0 + 16.0, pz, py, d);
-        if (westForeign && Math.abs(px - x0) <= d)
-            drawWallFixedX(p, x0, z0, z0 + 16.0, pz, py, d);
-        if (southForeign && Math.abs(pz - (z0 + 16.0)) <= d)
-            drawWallFixedZ(p, z0 + 16.0, x0, x0 + 16.0, px, py, d);
-        if (northForeign && Math.abs(pz - z0) <= d)
-            drawWallFixedZ(p, z0, x0, x0 + 16.0, px, py, d);
+        int pcx = loc.getBlockX() >> 4, pcz = loc.getBlockZ() >> 4;
+
+        // Nearest section line running north-south (constant X).
+        double lineX = Math.rint(px / sectionBlocks) * sectionBlocks;
+        if (Math.abs(px - lineX) <= d) {
+            int lineChunk = (int) Math.floorDiv((long) lineX, 16L);
+            int acrossCx = px < lineX ? lineChunk : lineChunk - 1;
+            boolean edge = !Bukkit.isOwnedByCurrentRegion(w, acrossCx, pcz);
+            ParticleWalls.wallAtX(p, lineX, pz - d, pz + d, pz, py, d, edge ? EDGE_DUST : SECTION_DUST);
+        }
+        // Nearest section line running east-west (constant Z).
+        double lineZ = Math.rint(pz / sectionBlocks) * sectionBlocks;
+        if (Math.abs(pz - lineZ) <= d) {
+            int lineChunk = (int) Math.floorDiv((long) lineZ, 16L);
+            int acrossCz = pz < lineZ ? lineChunk : lineChunk - 1;
+            boolean edge = !Bukkit.isOwnedByCurrentRegion(w, pcx, acrossCz);
+            ParticleWalls.wallAtZ(p, lineZ, px - d, px + d, px, py, d, edge ? EDGE_DUST : SECTION_DUST);
+        }
     }
-    private void drawWallFixedX(Player p, double bx, double zMin, double zMax, double pz, double py, double d) {
-        double zFrom = Math.max(zMin, pz - d), zTo = Math.min(zMax, pz + d);
-        for (double z = zFrom; z <= zTo; z += 0.5)
-            for (double y = py - 1.0; y <= py + 3.0; y += 0.5)
-                p.spawnParticle(Particle.DUST, bx, y, z, 1, REGION_DUST);
-    }
-    private void drawWallFixedZ(Player p, double bz, double xMin, double xMax, double px, double py, double d) {
-        double xFrom = Math.max(xMin, px - d), xTo = Math.min(xMax, px + d);
-        for (double x = xFrom; x <= xTo; x += 0.5)
-            for (double y = py - 1.0; y <= py + 3.0; y += 0.5)
-                p.spawnParticle(Particle.DUST, x, y, bz, 1, REGION_DUST);
-    }
+
     public void shutdown() {
-        tasks.values().forEach(t -> { try { t.cancel(); } catch (Throwable ignored) {} });
-        tasks.clear();
+        active = false;
+        tasks.close();
     }
 }
